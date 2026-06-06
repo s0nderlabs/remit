@@ -2,6 +2,16 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.1.1] - 2026-06-06
+
+### Added
+
+- Dashboard deployment gate (`packages/dashboard/proxy.ts`, Next 16 proxy convention): HTTP basic auth over every route AND static asset, since the client bundle embeds the dev-posture admin token. Server-side env (`DASH_BASIC_USER`/`DASH_BASIC_PASS`); both unset = open (local dev), half-configured = fail closed, constant-time credential compare.
+
+### Changed
+
+- `*.tsbuildinfo` untracked and ignored (build state).
+
 ## [0.1.0] - 2026-06-06
 
 First sealed release: the full product loop, live-validated on Base mainnet.

@@ -145,6 +145,7 @@ bun run typecheck        # per-package tsc
 | `NEXT_PUBLIC_REMIT_API` | dashboard | server API base, e.g. `http://localhost:4070/api` |
 | `NEXT_PUBLIC_REMIT_ADMIN_TOKEN` | dashboard | admin token used by the dashboard (dev posture) |
 | `NEXT_PUBLIC_BASE_RPC` | dashboard | Base RPC for client-side reads |
+| `DASH_BASIC_USER` / `DASH_BASIC_PASS` | dashboard deploys | server-side only (never `NEXT_PUBLIC_`): HTTP basic auth over the whole dashboard, assets included. Both unset = open (local dev); one set = fail closed. The dashboard's origin must also be in the server's `REMIT_CORS_ORIGINS` |
 
 ## Security model
 

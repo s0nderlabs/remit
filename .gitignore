@@ -22,3 +22,4 @@ PLAN.md
 
 # local dev state (secrets, sqlite)
 .dev/
+*.tsbuildinfo

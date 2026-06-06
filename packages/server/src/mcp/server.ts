@@ -36,7 +36,7 @@ import {
 import type { AppDeps } from "../deps";
 import { spendDeps } from "../deps";
 
-const SERVER_INFO = { name: "remit", version: "0.1.0" };
+const SERVER_INFO = { name: "remit", version: "0.1.1" };
 
 // ---------------------------------------------------------------------------
 // Result helpers
