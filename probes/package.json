@@ -1,0 +1,21 @@
+{
+  "name": "probes",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "probe": "bun run index.ts",
+    "probe:testnet": "bun run index.ts 84532",
+    "probe:mainnet": "bun run probe-mainnet.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@metamask/smart-accounts-kit": "^1.6.0",
+    "viem": "^2.52.2"
+  }
+}

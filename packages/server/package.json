@@ -1,0 +1,23 @@
+{
+  "name": "@remit/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/mcp": "^0.3.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@remit/engine": "workspace:*",
+    "@x402/core": "^2.14.0",
+    "hono": "^4.11.3",
+    "viem": "2.52.2",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

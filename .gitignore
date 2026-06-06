@@ -1,0 +1,24 @@
+node_modules/
+dist/
+.next/
+.vercel/
+.env
+.env.*
+!.env.example
+*.local
+*.sqlite
+*.sqlite-*
+.DS_Store
+
+# local-only project docs (never on GitHub)
+CLAUDE.md
+PLAN.md
+
+# anything Claude Code related (session state, local MCP config, skills)
+.claude/
+.claude.json
+.mcp.json
+**/CLAUDE.local.md
+
+# local dev state (secrets, sqlite)
+.dev/
