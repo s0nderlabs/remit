@@ -42,6 +42,8 @@ export type SpendDeps = {
   now?: () => number;
   /** test seam: overrides the on-chain getCode check */
   codeCheck?: (address: Address, chainId: ChainId) => Promise<boolean>;
+  /** test seam: overrides the live account-nonce read (stale-7702-auth guard) */
+  accountNonce?: (address: Address, chainId: ChainId) => Promise<number>;
   /** confirm inclusion via chain logs (default true; tests with a fake relayer set false) */
   confirmViaChain?: boolean;
   /** fee-uniqueness jitter source (default random 0-999 atoms; tests pin it) */
@@ -80,6 +82,40 @@ export function assertChainSpendable(chain: CardRow[], now: number): void {
 export function delegationForMode(card: CardRow, mode: SpendMode): WireDelegation {
   if (!card.compiled.orGroups) return card.delegation;
   return { ...card.delegation, caveats: applyOrArgs(card.compiled, mode) };
+}
+
+/** Resolve the authorizationList for a not-yet-7702-coded delegator from the stored
+ * auth, REFUSING if the account nonce has advanced past the signed nonce: a 7702
+ * authorization is single-nonce, so a stale one is guaranteed to revert on-chain.
+ * The user heals it by re-onboarding (the dashboard re-signs a fresh auth on login). */
+export async function resolveStoredAuth(
+  stage: string,
+  user: { address: string; auth7702_json: string | null },
+  chainId: ChainId,
+  accountNonce?: (address: Address, chainId: ChainId) => Promise<number>,
+): Promise<Wire7702Auth[]> {
+  if (!user.auth7702_json) {
+    throw new EngineError(stage, "user not 7702-coded and no stored authorization");
+  }
+  const auth = JSON.parse(user.auth7702_json) as Wire7702Auth;
+  let live: number | null = null;
+  try {
+    live = await (accountNonce ??
+      ((a: Address, cid: ChainId) => publicClient(cid).getTransactionCount({ address: a })))(
+      user.address as Address,
+      chainId,
+    );
+  } catch {
+    // RPC blip: proceed with the stored auth — the relayer pre-simulates and the chain backstops
+  }
+  if (live !== null && BigInt(auth.nonce) !== BigInt(live)) {
+    throw new RefusalError(
+      "invalid_terms",
+      "stored 7702 authorization is stale (the account nonce advanced past the signed nonce) — sign in on the dashboard to refresh it",
+      { signed_nonce: BigInt(auth.nonce).toString(), account_nonce: live.toString() },
+    );
+  }
+  return [auth];
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +300,14 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
   if (req.idempotencyKey) {
     const existing = store.chargeByIdempotency(cardId, req.idempotencyKey);
     if (existing) {
-      return receiptFromCharge(deps, cardId, existing.status, existing.tx_hash, existing.to_addr ?? req.to ?? FEE_COLLECTOR, existing.amount_atoms, existing.fee_atoms, now, existing.memo ?? undefined);
+      // A charge that FAILED before it was ever broadcast (request_id null) was never
+      // sent on-chain — retrying the same key must re-attempt, not seal the failure.
+      // A failure WITH a request_id might have landed on-chain, so it stays terminal.
+      if (existing.status === "failed" && existing.request_id === null) {
+        store.deleteCharge(existing.id); // clear the dead row so the unique idem index frees up
+      } else {
+        return receiptFromCharge(deps, cardId, existing.status, existing.tx_hash, existing.to_addr ?? req.to ?? FEE_COLLECTOR, existing.amount_atoms, existing.fee_atoms, now, existing.memo ?? undefined);
+      }
     }
   }
 
@@ -291,14 +334,11 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
   // budget for contract cards is the scope itself. Pay caps still count amount+fee.
   validateSpend(deps, chain, req, amountAtoms + feeAtoms, now);
 
-  // authorizationList: only until A_user's 7702 code lands
+  // authorizationList: only until A_user's 7702 code lands (stale-nonce-guarded)
   const codeCheck = deps.codeCheck ?? has7702Code;
   let authorizationList: Wire7702Auth[] | undefined;
   if (!(await codeCheck(user.address as Address, chainId))) {
-    if (!user.auth7702_json) {
-      throw new EngineError("spend", "user has no 7702 code and no stored authorization");
-    }
-    authorizationList = [JSON.parse(user.auth7702_json) as Wire7702Auth];
+    authorizationList = await resolveStoredAuth("spend", user, chainId, deps.accountNonce);
   }
 
   const chainDelegations = chain.map((c) => delegationForMode(c, req.mode));
@@ -341,6 +381,13 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
 
     if (!est.context) throw new EngineError("estimate", "estimate succeeded but returned no context");
 
+    // Budget re-validate + reservation insert as ONE synchronous pair (no await between):
+    // the Stripe webhook's fiat leg writes into the SAME budget rows with its own
+    // atomic-sync decide+insert and CANNOT take the spend mutex (its 2s reply window
+    // can't queue behind a 90s crypto confirmation). A fiat charge that landed during
+    // the estimate await gap is therefore always visible here, before we reserve+send.
+    validateSpend(deps, chain, req, amountAtoms + feeAtoms, now);
+
     // record BEFORE send so a crash can't double-spend on retry
     const chargeId = crypto.randomUUID();
     store.insertCharge({
@@ -362,6 +409,17 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
     // block height BEFORE send: the log-scan window for chain-side confirmation
     const sinceBlock = viaChain ? await publicClient(chainId).getBlockNumber() : 0n;
 
+    // TOCTOU guard: a freeze/revoke can land during the async estimate round-trips.
+    // Re-read the chain's status from the store (no RPC) and bail BEFORE broadcasting
+    // rather than emitting a spend we already had grounds to refuse. The chain remains
+    // the ultimate backstop for anything that still slips through.
+    try {
+      assertChainSpendable(store.ancestorChain(cardId), now);
+    } catch (e) {
+      store.updateCharge(chargeId, { status: "failed" });
+      throw e;
+    }
+
     let requestId: string;
     try {
       requestId = await deps.relayer.send([{ permissionContext, executions }], est.context, authorizationList);
@@ -369,7 +427,10 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
       store.updateCharge(chargeId, { status: "failed" });
       throw e;
     }
-    store.updateCharge(chargeId, { request_id: requestId });
+    // record request_id + the broadcast block: reconcile scans the fee-leg log from
+    // since_block (never head-lookback), so a landed log is found no matter how long
+    // the sweep was down.
+    store.updateCharge(chargeId, { request_id: requestId, since_block: sinceBlock });
 
     const confirmation = viaChain
       ? await confirmRedemption(deps.relayer, {
@@ -396,7 +457,7 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
   throw new EngineError("estimate", `estimate loop exhausted: ${lastError ?? "fee kept increasing"}`);
 }
 
-function statusToConfirmation(st: { status: number | null; txHash: Hex | null }): {
+export function statusToConfirmation(st: { status: number | null; txHash: Hex | null }): {
   status: "confirmed" | "failed" | "pending";
   txHash: Hex | null;
 } {
@@ -426,6 +487,118 @@ function receiptFromCharge(
     remaining_this_period: state?.remaining_this_period ?? null,
     ...(memo ? { memo } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile sweep: settle charges left "pending" (confirmRedemption timed out but
+// the tx may have landed). A pending charge counts against budget forever until
+// resolved, so this re-checks each broadcast-but-unconfirmed charge against chain
+// logs and flips it to confirmed/failed. Safe to call periodically (idempotent).
+// ---------------------------------------------------------------------------
+
+export async function reconcilePending(
+  deps: SpendDeps,
+  opts: {
+    olderThanSeconds?: number;
+    lookbackBlocks?: bigint;
+    /** test seam: fee-leg Transfer log scan (delegator -> feeCollector since fromBlock) */
+    scanFeeLogs?: (delegator: Address, fromBlock: bigint) => Promise<Array<{ value: bigint; txHash: Hex }>>;
+    /** test seam: chain head */
+    blockNumber?: () => Promise<bigint>;
+  } = {},
+): Promise<{ reconciled: number; stillPending: number }> {
+  const chainId = deps.chainId ?? CHAIN_ID;
+  const now = deps.now ? deps.now() : Math.floor(Date.now() / 1000);
+  // cutoff defaults to 10 min (>> confirmRedemption's 90s timeout): a tx unmined this
+  // long on Base (2s blocks) is genuinely dropped, so failing it can't race a late mine.
+  const cutoff = now - (opts.olderThanSeconds ?? 600);
+  const stale = deps.store.pendingChargesOlderThan(cutoff);
+  // x402 reservations that never reached a relayer broadcast (request_id null) leak
+  // budget if the inline finalize was lost; free them after a generous TTL.
+  const x402Cutoff = now - (opts.olderThanSeconds ?? 600) * 6; // ~1h default
+  const x402Orphans = deps.store.pendingX402ChargesOlderThan(x402Cutoff);
+  if (!stale.length && !x402Orphans.length) return { reconciled: 0, stillPending: 0 };
+
+  let reconciled = 0;
+  for (const orphan of x402Orphans) {
+    deps.store.updateCharge(orphan.id, { status: "failed" });
+    reconciled++;
+  }
+  if (!stale.length) return { reconciled, stillPending: 0 };
+
+  const pub = publicClient(chainId);
+  const usdc = CHAINS[chainId].usdc;
+  const scan =
+    opts.scanFeeLogs ??
+    (async (delegator: Address, fromBlock: bigint) => {
+      const logs = await pub.getLogs({
+        address: usdc,
+        event: {
+          type: "event",
+          name: "Transfer",
+          inputs: [
+            { name: "from", type: "address", indexed: true },
+            { name: "to", type: "address", indexed: true },
+            { name: "value", type: "uint256", indexed: false },
+          ],
+        },
+        args: { from: delegator, to: FEE_COLLECTOR },
+        fromBlock,
+      });
+      return logs.map((l) => ({ value: (l.args as { value?: bigint }).value ?? 0n, txHash: l.transactionHash }));
+    });
+
+  let head: bigint;
+  try {
+    head = await (opts.blockNumber ?? (() => pub.getBlockNumber()))();
+  } catch {
+    return { reconciled, stillPending: stale.length }; // RPC down: next sweep
+  }
+  const fallbackFrom = head > (opts.lookbackBlocks ?? 5000n) ? head - (opts.lookbackBlocks ?? 5000n) : 0n;
+
+  // Group stale charges by ancestor user so we scan each user's fee-leg logs ONCE, from
+  // the earliest broadcast block among that user's charges (every charge's fee-leg lives
+  // in [its since_block, head]). A per-user consumed-txHash set stops two same-fee charges
+  // (the 0..999 jitter only probabilistically unique) from both claiming one log.
+  const byUser = new Map<string, { address: Address; charges: typeof stale; minFrom: bigint }>();
+  let stillPending = 0;
+  for (const charge of stale) {
+    const user = deps.store.getUser(deps.store.ancestorChain(charge.card_id).at(-1)?.user_id ?? "");
+    if (!user) {
+      stillPending++; // orphaned row (card/user gone): can't resolve a delegator — surface it
+      continue;
+    }
+    const from = charge.since_block ? BigInt(charge.since_block) : fallbackFrom;
+    const g = byUser.get(user.id) ?? { address: user.address as Address, charges: [] as typeof stale, minFrom: from };
+    g.charges.push(charge);
+    if (from < g.minFrom) g.minFrom = from;
+    byUser.set(user.id, g);
+  }
+
+  for (const { address, charges, minFrom } of byUser.values()) {
+    let logs: Array<{ value: bigint; txHash: Hex }>;
+    try {
+      logs = await scan(address, minFrom);
+    } catch {
+      stillPending += charges.length; // RPC blip: leave them for the next sweep
+      continue;
+    }
+    const consumed = new Set<Hex>();
+    for (const charge of charges) {
+      // the fee jitter makes (delegator, feeCollector, value) a per-spend fingerprint;
+      // skip logs already claimed by an earlier charge this sweep
+      const hit = logs.find((l) => l.value === charge.fee_atoms && !consumed.has(l.txHash));
+      if (hit) {
+        consumed.add(hit.txHash);
+        deps.store.updateCharge(charge.id, { status: "confirmed", tx_hash: hit.txHash });
+      } else {
+        // no unclaimed fee-leg log since the broadcast block: the redemption never landed.
+        deps.store.updateCharge(charge.id, { status: "failed" });
+      }
+      reconciled++;
+    }
+  }
+  return { reconciled, stillPending };
 }
 
 // ---------------------------------------------------------------------------

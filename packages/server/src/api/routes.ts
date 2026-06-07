@@ -21,11 +21,14 @@ import {
   EngineError,
   RefusalError,
   cardState,
+  finalizeAdminOp,
   freezeCard,
   unfreezeCard,
   revokeCard,
   nukeAll,
   issueRootCard,
+  prepareNuke,
+  prepareRevoke,
   prepareRootCard,
   finalizeRootCard,
   readRevocationNonce,
@@ -33,6 +36,7 @@ import {
   viewCardSecret,
   type CardRow,
   type CardTerms,
+  type PreparedAdminOp,
   type PreparedRootCard,
   type UserRow,
   type Wire7702Auth,
@@ -70,6 +74,22 @@ export function apiRoutes(deps: AppDeps): Hono<{ Variables: { auth: AuthCtx } }>
     const t = Date.now();
     for (const [k, v] of pending) if (v.expires < t) pending.delete(k);
   };
+
+  // Prepared admin ops (client-signed revoke/nuke). STRICTER than card prepares: a
+  // SIGNED admin leaf is live spend authority (admin call + fee transfer), so these
+  // get a 2-minute TTL (enforced at finalize, not just opportunistic GC) and are
+  // single-use — consumed the instant the signature verifies, BEFORE the relayer send,
+  // never re-finalizable past that point. `inProgress` is the SYNCHRONOUS claim: two
+  // concurrent finalizes both pass Map.get before the first await, so the flag (set
+  // before any await) is what actually makes single-use atomic.
+  const pendingAdmin = new Map<string, { prepared: PreparedAdminOp; expires: number; inProgress?: boolean }>();
+  const ADMIN_TTL_MS = 2 * 60_000;
+  const gcAdmin = () => {
+    const t = Date.now();
+    for (const [k, v] of pendingAdmin) if (v.expires < t) pendingAdmin.delete(k);
+  };
+  /** finalize deps for client-signed admin ops (test seams ride in via opsOverrides) */
+  const adminFinalizeDeps = () => ({ store: deps.store, relayer: deps.relayer, ...(deps.opsOverrides ?? {}) });
 
   // ---- auth: admin token (ops) OR verified Privy session (dashboard) ----
   app.use("*", async (c: Context<{ Variables: { auth: AuthCtx } }>, next: Next) => {
@@ -234,7 +254,11 @@ export function apiRoutes(deps: AppDeps): Hono<{ Variables: { auth: AuthCtx } }>
         throw new RefusalError("invalid_terms", "prepare_id and signature required");
       }
       const entry = pending.get(body.prepare_id);
-      if (!entry || (c.get("auth").kind === "privy" && entry.prepared.userId !== boundUser(c).id)) {
+      if (
+        !entry ||
+        entry.expires < Date.now() || // TTL enforced at finalize, not just prepare-path GC
+        (c.get("auth").kind === "privy" && entry.prepared.userId !== boundUser(c).id)
+      ) {
         throw new RefusalError("invalid_terms", "unknown or expired prepare_id");
       }
       const issued = await finalizeRootCard({ store: deps.store }, entry.prepared, body.signature);
@@ -328,10 +352,108 @@ export function apiRoutes(deps: AppDeps): Hono<{ Variables: { auth: AuthCtx } }>
     }),
   );
 
+  // ---- client-signed revoke/nuke (the Privy lane): prepare -> browser signs -> finalize ----
+
+  // Step 1: build the admin leaf for the browser to sign. Sub-cards die server-side
+  // immediately (their on-chain delegator is the parent's K_agent, not A_user — there
+  // is nothing for the user to sign).
+  app.post("/cards/:id/revoke/prepare", (c) =>
+    handle(c, async () => {
+      gcAdmin();
+      const card = ownedCard(c, c.req.param("id"));
+      const result = prepareRevoke({ store: deps.store }, card.id);
+      if ("done" in result) return { status: "revoked", onchain: false };
+      pendingAdmin.set(result.prepareId, { prepared: result, expires: Date.now() + ADMIN_TTL_MS });
+      return {
+        prepare_id: result.prepareId,
+        chain_id: result.chainId,
+        kind: result.kind,
+        // the exact admin leaf the browser must sign (signature: "0x")
+        delegation: result.delegation,
+      };
+    }),
+  );
+
+  // Step 2: attach the signature and execute the on-chain disableDelegation.
+  app.post("/cards/:id/revoke/finalize", (c) =>
+    handle(c, async () => {
+      const body = (await c.req.json()) as { prepare_id?: string; signature?: Hex };
+      if (!body.prepare_id || !body.signature) {
+        throw new RefusalError("invalid_terms", "prepare_id and signature required");
+      }
+      const card = ownedCard(c, c.req.param("id")); // foreign cards look nonexistent
+      const entry = pendingAdmin.get(body.prepare_id);
+      if (
+        !entry ||
+        entry.expires < Date.now() || // TTL enforced HERE, not just by prepare-path GC
+        entry.prepared.kind !== "revoke" ||
+        entry.prepared.cardId !== card.id ||
+        (c.get("auth").kind === "privy" && entry.prepared.userId !== boundUser(c).id)
+      ) {
+        throw new RefusalError("invalid_terms", "unknown or expired prepare_id");
+      }
+      if (entry.inProgress) throw new RefusalError("invalid_terms", "finalize already in progress");
+      entry.inProgress = true; // synchronous claim: blocks a concurrent double-fire
+      try {
+        const result = await finalizeAdminOp(adminFinalizeDeps(), entry.prepared, body.signature, {
+          // single-use: consumed the moment the signature verifies (a bad signature is
+          // retryable until the TTL; a verified one must never finalize twice)
+          onValidated: () => pendingAdmin.delete(body.prepare_id!),
+        });
+        return { status: "revoked", tx: result.txHash };
+      } finally {
+        entry.inProgress = false; // no-op if consumed; re-arms retry on a bad signature
+      }
+    }),
+  );
+
+  app.post("/nuke/prepare", (c) =>
+    handle(c, async () => {
+      gcAdmin();
+      const body = (await c.req.json().catch(() => ({}))) as { userId?: string };
+      const prepared = prepareNuke({ store: deps.store }, scopedUserId(c, body.userId));
+      pendingAdmin.set(prepared.prepareId, { prepared, expires: Date.now() + ADMIN_TTL_MS });
+      return {
+        prepare_id: prepared.prepareId,
+        chain_id: prepared.chainId,
+        kind: prepared.kind,
+        delegation: prepared.delegation,
+      };
+    }),
+  );
+
+  app.post("/nuke/finalize", (c) =>
+    handle(c, async () => {
+      const body = (await c.req.json()) as { prepare_id?: string; signature?: Hex };
+      if (!body.prepare_id || !body.signature) {
+        throw new RefusalError("invalid_terms", "prepare_id and signature required");
+      }
+      const entry = pendingAdmin.get(body.prepare_id);
+      if (
+        !entry ||
+        entry.expires < Date.now() || // TTL enforced HERE, not just by prepare-path GC
+        entry.prepared.kind !== "nuke" ||
+        (c.get("auth").kind === "privy" && entry.prepared.userId !== boundUser(c).id)
+      ) {
+        throw new RefusalError("invalid_terms", "unknown or expired prepare_id");
+      }
+      if (entry.inProgress) throw new RefusalError("invalid_terms", "finalize already in progress");
+      entry.inProgress = true; // synchronous claim: blocks a concurrent double-fire
+      try {
+        const result = await finalizeAdminOp(adminFinalizeDeps(), entry.prepared, body.signature, {
+          onValidated: () => pendingAdmin.delete(body.prepare_id!),
+        });
+        return { status: "nuked", tx: result.txHash, new_nonce: result.newNonce!.toString() };
+      } finally {
+        entry.inProgress = false;
+      }
+    }),
+  );
+
   app.post("/cards/:id/revoke", (c) =>
     handle(c, async () => {
       // server-signed (deps.userSigner = the dev key), like /cards and /nuke: admin-only.
-      // The privy lane revokes client-side (signed by the user's own A_user) — wired separately.
+      // The privy lane revokes client-side via /revoke/prepare + /revoke/finalize above.
       adminOnly(c);
       const card = ownedCard(c, c.req.param("id"));
       if (!deps.userSigner) throw new EngineError("api", "no dev signer configured");

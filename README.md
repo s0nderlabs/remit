@@ -98,10 +98,9 @@ Requires [bun](https://bun.sh). Real money moves on Base mainnet; use small budg
 
 ```bash
 bun install
-
-# minimal env (see .env.example for the full list)
-export REMIT_MASTER_KEY=<64 hex chars>     # encrypts agent keys + card secrets at rest
-export REMIT_ADMIN_TOKEN=<random token>    # protects the management API
+cp .env.example .env                       # then fill in the two required vars:
+# REMIT_MASTER_KEY=<64 hex chars>            encrypts agent keys + card secrets at rest
+# REMIT_ADMIN_TOKEN=<random token>           protects the management API
 
 bun dev                                    # server on :4070
 bun run --cwd packages/dashboard dev       # dashboard on :4071
@@ -135,13 +134,16 @@ bun run typecheck        # per-package tsc
 | `PORT` | no | server port (default 4070) |
 | `REMIT_DB_PATH` | no | SQLite path (default `.dev/remit.sqlite`) |
 | `REMIT_RPC_URL` | no | Base RPC (default `https://mainnet.base.org`) |
-| `REMIT_PUBLIC_MCP_BASE` | no | public origin used when rendering card URLs |
+| `REMIT_PUBLIC_MCP_BASE` | prod | public origin used when rendering card URLs (unset = localhost; also arms the MCP Host allowlist) |
+| `REMIT_ALLOWED_HOSTS` | no | extra Host headers accepted on the MCP endpoint (comma-separated; e.g. a platform fallback domain) |
 | `REMIT_CORS_ORIGINS` | no | comma-separated allowed origins for the API |
 | `REMIT_DEV_USER_PK` | no | dev-only server-custodied user key (server-signed issuance lane) |
 | `REMIT_FACILITATOR_BASE` | no | x402 facilitator base URL (defaults to self) |
 | `REMIT_SELLER_PAYTO` | no | payout address for the built-in demo seller |
 | `REMIT_PAID_FETCH_ALLOW_LOCAL` | no | allow `paid_fetch` to hit local/private hosts (dev only) |
-| `REMIT_STRIPE_WEBHOOK_SECRET` | no | Stripe real-time auth webhook signature secret (test mode) |
+| `REMIT_STRIPE_WEBHOOK_SECRET` | no | Stripe real-time auth webhook signing secret (test mode); unset = the fiat leg answers 503 (disabled) |
+| `REMIT_RECONCILE_INTERVAL_MS` | no | stuck-pending-charge reconcile sweep interval (default 300000; 0 disables) |
+| `REMIT_MCP_RATE_LIMIT` / `REMIT_MCP_BAD_SECRET_LIMIT` | no | per-card and per-IP-bad-secret request ceilings per minute (defaults 240 / 30) |
 | `NEXT_PUBLIC_PRIVY_APP_ID` / `NEXT_PUBLIC_PRIVY_CLIENT_ID` | dashboard | Privy app credentials (public identifiers, not secrets) |
 | `NEXT_PUBLIC_REMIT_API` | dashboard | server API base, e.g. `http://localhost:4070/api` |
 | `NEXT_PUBLIC_BASE_RPC` | dashboard | Base RPC for client-side reads |
@@ -155,7 +157,8 @@ The dashboard carries **no shared secret**: every API call sends the signed-in u
 - **Issuance integrity**: the server verifies the delegation signature recovers to the delegator on both issuance lanes before persisting a card.
 - **Card secrets**: 256-bit, stored hashed; the URL is a credential, rotate it like a password.
 - **Limits enforced twice**: server-side at call time (typed refusals) and on-chain by caveat enforcers at redemption.
-- **Revocation layers**: freeze (server, reversible) -> revoke (card + subtree, permanent) -> nuke (on-chain nonce bump, kills every delegation ever issued by the wallet).
+- **Revocation layers**: freeze (server, reversible) -> revoke (card + subtree, permanent) -> nuke (on-chain nonce bump, kills every delegation ever issued by the wallet). All three are user-operable from the dashboard; on-chain revoke and nuke are signed by the user's own embedded wallet in the browser (an admin leaf delegation) and ride the relayer gaslessly.
+- **MCP surface hardening**: Host allowlist (DNS-rebinding guard), per-card and bad-secret rate limits, 1 MiB body cap, secrets never echoed in errors or logs.
 - **Stripe leg**: test mode only, by design; the real-time auth webhook answers from cached delegation state within Stripe's 2s window.
 
 ## Built for the MetaMask Smart Accounts x 1Shot API x Venice AI Dev Cook Off (2026)

@@ -34,9 +34,9 @@ import {
   type X402Requirement,
 } from "@remit/engine";
 import type { AppDeps } from "../deps";
-import { spendDeps } from "../deps";
+import { spendDeps, spendKey } from "../deps";
 
-const SERVER_INFO = { name: "remit", version: "0.2.0" };
+const SERVER_INFO = { name: "remit", version: "0.3.0" };
 
 // ---------------------------------------------------------------------------
 // Result helpers
@@ -77,7 +77,7 @@ async function run(fn: () => Promise<unknown>): Promise<ToolResult> {
 // ---------------------------------------------------------------------------
 
 export function cardUrl(secret: string): string {
-  const base = process.env.REMIT_PUBLIC_MCP_BASE ?? "http://localhost:3000";
+  const base = process.env.REMIT_PUBLIC_MCP_BASE ?? `http://localhost:${process.env.PORT ?? 4070}`;
   return `${base}/c/${secret}/mcp`;
 }
 
@@ -89,6 +89,11 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
   const server = new McpServer(SERVER_INFO);
   const sd: SpendDeps = spendDeps(deps);
   const now = () => Math.floor(Date.now() / 1000);
+  // serialize money-moving sections per card TREE: concurrent spends of the same
+  // budget must validate one-at-a-time or both can pass a read-then-write check.
+  // The tree-root key is constant for this card (no reparenting): resolve it once.
+  const treeKey = spendKey(deps.store, card.id);
+  const locked = <T>(fn: () => Promise<T>): Promise<T> => deps.spendMutex.run(treeKey, fn);
 
   // ---- card (always) ----
   server.registerTool(
@@ -98,6 +103,7 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
       description:
         "Your spending card's terms and live state: remaining budget this period, lifetime remaining, expiry, recent charges, sub-cards. Call this first to learn what you can spend.",
       inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async () =>
       run(async () => {
@@ -129,17 +135,20 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
           memo: z.string().max(280).optional().describe("what this payment is for"),
           idempotency_key: z.string().max(128).optional().describe("same key -> same charge (safe retries)"),
         },
+        annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
       },
       async (args: { to: string; amount: string; memo?: string; idempotency_key?: string }) =>
-        run(async () =>
-          spend(sd, card.id, {
-            kind: "pay",
-            mode: "pay",
-            to: args.to as Address,
-            amountAtoms: usdcToAtoms(args.amount),
-            memo: args.memo,
-            idempotencyKey: args.idempotency_key,
-          }),
+        run(() =>
+          locked(() =>
+            spend(sd, card.id, {
+              kind: "pay",
+              mode: "pay",
+              to: args.to as Address,
+              amountAtoms: usdcToAtoms(args.amount),
+              memo: args.memo,
+              idempotencyKey: args.idempotency_key,
+            }),
+          ),
         ),
     );
   }
@@ -156,6 +165,7 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
           url: z.string().url().describe("the resource URL"),
           max_price: z.string().regex(/^\d+(\.\d{1,6})?$/).optional().describe("max USDC you allow for this fetch"),
         },
+        annotations: { destructiveHint: true, openWorldHint: true },
       },
       async (args: { url: string; max_price?: string }) =>
         run(async () => {
@@ -189,15 +199,27 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
             });
           }
 
-          const { body: payload, chargeId, amountAtoms } = await buildX402Payload(sd, card.id, req);
+          // the budget check + charge reservation inside buildX402Payload must be
+          // serialized with other spends of this card tree
+          const { body: payload, chargeId, amountAtoms } = await locked(() => buildX402Payload(sd, card.id, req));
           const envelope = { x402Version: 2, accepted: req, payload };
-          const retry = await fetch(args.url, {
-            headers: { "PAYMENT-SIGNATURE": encodePaymentSignatureHeader(envelope as never) },
-            redirect: "manual",
-          });
+          // From here the reservation is live: ANY throw before finalizeX402Charge would
+          // leave the charge stuck 'pending', permanently holding budget (x402 rows are
+          // invisible to the relayer reconcile sweep). A thrown retry fetch (DNS reset,
+          // seller down between the 402 and the retry) must release it.
+          let retry: Response;
+          try {
+            retry = await fetch(args.url, {
+              headers: { "PAYMENT-SIGNATURE": encodePaymentSignatureHeader(envelope as never) },
+              redirect: "manual",
+            });
+          } catch (e) {
+            finalizeX402Charge(sd.store, chargeId, "failed");
+            throw new EngineError("x402", `paid retry fetch failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
           if (!retry.ok) {
             finalizeX402Charge(sd.store, chargeId, "failed");
-            const detail = truncate(await retry.text(), 500);
+            const detail = truncate(await retry.text().catch(() => ""), 500);
             throw new EngineError("x402", `seller rejected the payment (http ${retry.status}): ${detail}`);
           }
 
@@ -205,21 +227,31 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
           let feeAtoms = 0n;
           const respHeader = retry.headers.get("PAYMENT-RESPONSE") ?? retry.headers.get("payment-response");
           if (respHeader) {
-            const settled = decodePaymentResponseHeader(respHeader) as {
-              transaction?: string;
-              extensions?: { feeAtoms?: string };
-            };
-            tx = settled.transaction ?? null;
-            feeAtoms = settled.extensions?.feeAtoms ? BigInt(settled.extensions.feeAtoms) : 0n;
+            try {
+              const settled = decodePaymentResponseHeader(respHeader) as {
+                transaction?: string;
+                extensions?: { feeAtoms?: string };
+              };
+              tx = settled.transaction ?? null;
+              feeAtoms = settled.extensions?.feeAtoms ? BigInt(settled.extensions.feeAtoms) : 0n;
+            } catch {
+              // malformed receipt header: treat as no receipt (settlement_unconfirmed),
+              // never leak the reservation over a decode error
+            }
           }
           finalizeX402Charge(sd.store, chargeId, { txHash: (tx as `0x${string}`) ?? null, feeAtoms });
 
+          // Honesty: a settlement is only "confirmed" if the seller echoed a tx in
+          // PAYMENT-RESPONSE. A bare 200 with no receipt means the seller served the
+          // content but didn't prove on-chain settlement — report it as such (the
+          // server-side budget is still reserved either way).
+          const status = tx ? "confirmed" : "settlement_unconfirmed";
           const state = cardState(sd.store, card.id, now());
           return {
             paid: true,
             content: truncate(await retry.text()),
             receipt: {
-              status: "confirmed",
+              status,
               tx,
               amount: atomsToUsdc(amountAtoms),
               fee: atomsToUsdc(feeAtoms),
@@ -252,18 +284,21 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
           memo: z.string().max(280).optional(),
           idempotency_key: z.string().max(128).optional(),
         },
+        annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
       },
       async (args: { calls: Array<{ target: string; method: string; args: Array<string | number | boolean> }>; memo?: string; idempotency_key?: string }) =>
-        run(async () => {
-          const executions = args.calls.map((call) => encodeScopedCall(card.terms, call));
-          return spend(sd, card.id, {
-            kind: "execute",
-            mode: "contract",
-            workExecutions: executions,
-            memo: args.memo,
-            idempotencyKey: args.idempotency_key,
-          });
-        }),
+        run(() =>
+          locked(() => {
+            const executions = args.calls.map((call) => encodeScopedCall(card.terms, call));
+            return spend(sd, card.id, {
+              kind: "execute",
+              mode: "contract",
+              workExecutions: executions,
+              memo: args.memo,
+              idempotencyKey: args.idempotency_key,
+            });
+          }),
+        ),
     );
   }
 
@@ -293,6 +328,7 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
             })
             .describe("child terms; every field must be <= this card's"),
         },
+        annotations: { openWorldHint: false },
       },
       async (args: { name: string; terms: unknown }) =>
         run(async () => {
@@ -314,6 +350,7 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
         inputSchema: {
           card_id: z.string().describe("the sub-card's id (from issue_subcard or card)"),
         },
+        annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
       },
       async (args: { card_id: string }) =>
         run(async () => {

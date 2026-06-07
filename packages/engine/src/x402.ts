@@ -141,8 +141,11 @@ export function finalizeX402Charge(
     store.updateCharge(chargeId, { status: "failed" });
     return;
   }
+  // Honesty: a settlement is "confirmed" only with an on-chain tx. A bare 200 with no
+  // PAYMENT-RESPONSE receipt is recorded "settlement_unconfirmed" so the ledger matches
+  // the receipt the caller gets (the budget reservation is preserved either way).
   store.updateCharge(chargeId, {
-    status: "confirmed",
+    status: result.txHash ? "confirmed" : "settlement_unconfirmed",
     tx_hash: result.txHash ?? undefined,
     fee_atoms: result.feeAtoms,
   });

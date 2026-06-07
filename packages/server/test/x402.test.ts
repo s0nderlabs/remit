@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
+  KeyedMutex,
   Store,
   issueRootCard,
   decodeX402Delegations,
@@ -54,6 +55,7 @@ beforeAll(() => {
   store = new Store(":memory:");
   relayer = new FakeRelayer();
   const deps: AppDeps = {
+    spendMutex: new KeyedMutex(),
     store,
     relayer: relayer as unknown as Relayer,
     userSigner: user,

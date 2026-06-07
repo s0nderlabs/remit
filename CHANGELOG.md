@@ -2,6 +2,34 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.3.0] - 2026-06-07
+
+Client-signed revocation, MCP hardening, and a correctness pass over the money paths.
+
+### Added
+
+- **Client-signed on-chain revoke and nuke from the dashboard** (the Privy lane): the embedded wallet signs the admin leaf in the browser (prepare -> sign -> finalize, mirroring issuance), the relayer executes it gaslessly. Prepared admin ops are single-use (atomic in-progress claim), TTL'd to 2 minutes (enforced at finalize), and verified to recover to the account owner before anything reaches the relayer. Sub-cards still die server-side instantly (their on-chain delegator is the parent's agent key, honest layering).
+- **Per-card connect panel**: copy URL, Claude Code CLI snippet, Cursor one-click deeplink, generic JSON, claude.ai-web instructions, all per card next to the revealed URL.
+- **MCP surface hardening**: per-card and per-IP-bad-secret rate limits (trusting only the proxy-appended client IP), Host allowlist (DNS-rebinding guard, missing Host rejected), 1 MiB body cap, MCP tool annotations (read-only/destructive/idempotent/open-world hints).
+- **Spend serialization** (`KeyedMutex`): money-moving sections are serialized per card tree, so concurrent spends can't double-pass a budget check; the Stripe webhook stays lock-free (2s window) via a synchronous validate+reserve pair on the crypto side that closes the fiat/crypto race.
+- **Reconcile sweep**: charges left `pending` (confirmation timed out) are settled against chain logs periodically; the fee-leg scan is anchored at each charge's broadcast block (immune to sweep downtime), collision-guarded (one log can never confirm two charges), and orphaned x402 reservations are released after a TTL.
+
+### Fixed
+
+- **Sub-card NonceEnforcer binding**: sub-cards now compile their nonce caveat against their own delegator (the parent's agent key, nonce 0), not the user's revocation nonce. Previously, any sub-card issued after a nuke was born dead on-chain (`NonceEnforcer:invalid-nonce`); cascade revocation through the chain is unaffected.
+- `paid_fetch` no longer leaks the budget reservation when the paid retry fetch throws (network error / seller down between the 402 and the retry) or the settlement receipt header is malformed.
+- A timed-out admin confirmation no longer optimistically marks cards revoked/nuked while the delegation may still be live on-chain; the nuke marks the tree dead before the nonce re-read so an RPC blip can't leave dead cards looking alive.
+- Finalizing a stale admin prepare against an already-revoked/nuked card short-circuits instead of burning a relayer fee on a no-op transaction.
+- x402 settlements without an on-chain receipt are persisted as `settlement_unconfirmed` (new charge status), matching the receipt the agent gets instead of claiming `confirmed`.
+- Optional numeric env vars set to the empty string (the `cp .env.example .env` shape) no longer zero rate limits or silently disable the reconcile sweep.
+- Dashboard: the nuke and revoke success states (with the basescan tx proof link) survive the post-operation refresh instead of being unmounted within a second.
+- Card expiry is re-checked against a fresh clock before broadcast; freezes/revocations landing mid-pipeline are refused before send.
+
+### Changed
+
+- Stale stored 7702 authorizations (account nonce advanced past the signed nonce) are refused with a clear re-onboard message instead of reverting on-chain.
+- Retrying an idempotency key whose charge failed before broadcast re-attempts cleanly; failures that may have reached the chain stay terminal.
+
 ## [0.2.0] - 2026-06-07
 
 Auth model change: the dashboard now authenticates as the USER.

@@ -9,6 +9,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { Address } from "viem";
 import {
+  KeyedMutex,
   Store,
   issueRootCard,
   freezeCard,
@@ -53,6 +54,7 @@ beforeAll(() => {
   store = new Store(":memory:");
   relayer = new FakeRelayer();
   const deps: AppDeps = {
+    spendMutex: new KeyedMutex(),
     store,
     relayer: relayer as unknown as Relayer,
     userSigner: user,
@@ -248,5 +250,66 @@ describe("dashboard api", () => {
     expect((await fetch(`${base}/api/cards/${cardId}/unfreeze`, { method: "POST", headers: h })).status).toBe(200);
     const url = (await (await fetch(`${base}/api/cards/${cardId}/url`, { headers: h })).json()) as { card_url: string };
     expect(url.card_url).toContain("/c/");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hardening: host allowlist, rate limits, secret hygiene (#24)
+// ---------------------------------------------------------------------------
+
+describe("mcp hardening", () => {
+  test("Host header outside the allowlist is rejected (421); allowed host passes", async () => {
+    const { secret } = await issue({ pay: { lifetime: { amount: "1" } } }, "host-card");
+    // REMIT_PUBLIC_MCP_BASE = base, so the test server's own host is allowed
+    const evil = await fetch(`${base}/c/${secret}/mcp`, {
+      method: "POST",
+      headers: { host: "evil.example.com", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    });
+    expect(evil.status).toBe(421);
+    expect(await evil.text()).not.toContain(secret);
+  });
+
+  test("bad-secret 401 body never echoes the attempted secret", async () => {
+    const probe = "deadbeef".repeat(8);
+    const res = await fetch(`${base}/c/${probe}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    });
+    expect(res.status).toBe(401);
+    expect(await res.text()).not.toContain(probe);
+  });
+
+  test("repeated bad-secret attempts from one source hit the brute-force limiter (429)", async () => {
+    // the limiter allows 30/min per IP; same-process fetches share the "unknown" key.
+    // burn through the window with distinct bogus secrets, expect a 429 tail.
+    let got429 = false;
+    for (let i = 0; i < 40; i++) {
+      const res = await fetch(`${base}/c/bogus-${i}/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+      });
+      if (res.status === 429) {
+        got429 = true;
+        break;
+      }
+      expect(res.status).toBe(401);
+    }
+    expect(got429).toBe(true);
+  });
+
+  // LAST in the suite: an early 413 leaves the unconsumed request body on the
+  // keep-alive connection, which can wedge the NEXT request that reuses it.
+  test("oversized body is rejected (413) before parsing", async () => {
+    const { secret } = await issue({ pay: { lifetime: { amount: "1" } } }, "big-card");
+    const res = await fetch(`${base}/c/${secret}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", connection: "close" },
+      // a real 2 MiB body (the fetch client sets the true content-length)
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: { pad: "x".repeat(2 * 1024 * 1024) } }),
+    });
+    expect(res.status).toBe(413);
   });
 });

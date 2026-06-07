@@ -2,7 +2,7 @@
 // Proven mechanics ported from ../../probes (estimate/send shapes, fee leg, leaf-first
 // permissionContext, authorizationList rules). See memory: implementation-plan + card-lifecycle-flow.
 
-export const ENGINE_VERSION = "0.2.0";
+export const ENGINE_VERSION = "0.3.0";
 
 export * from "./chains";
 export * from "./money";
@@ -11,6 +11,7 @@ export * from "./types";
 export * from "./compiler";
 export * from "./custody";
 export * from "./store";
+export * from "./mutex";
 export * from "./relayer";
 export * from "./delegations";
 export * from "./spend";

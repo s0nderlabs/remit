@@ -4,7 +4,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { Store, issueRootCard, issueSubCard, freezeCard, unfreezeCard, type Relayer } from "@remit/engine";
+import { KeyedMutex, Store, issueRootCard, issueSubCard, freezeCard, unfreezeCard, type Relayer } from "@remit/engine";
 import { createApp } from "../src/app";
 import type { AppDeps } from "../src/deps";
 import { verifyStripeSignature } from "../src/stripe/routes";
@@ -22,6 +22,7 @@ beforeAll(async () => {
   process.env.REMIT_STRIPE_WEBHOOK_SECRET = WHSEC;
   store = new Store(":memory:");
   const deps: AppDeps = {
+    spendMutex: new KeyedMutex(),
     store,
     relayer: {} as Relayer, // webhook path never touches the relayer (2s rule)
     userSigner: user,

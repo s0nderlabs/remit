@@ -162,6 +162,13 @@ export function stripeRoutes(deps: AppDeps): Hono {
       approved = true;
       reason = "duplicate_delivery";
     } else if (remitCardId) {
+      // CONCURRENCY CONTRACT (vs the crypto leg sharing this budget): this decide ->
+      // insert block is fully SYNCHRONOUS (single-threaded runtime: nothing interleaves
+      // inside it), and the crypto spend pipeline re-validates the budget in its own
+      // synchronous validate+insert pair right before reserving. Together those make
+      // fiat/crypto overspend impossible WITHOUT this handler taking the spend mutex —
+      // which it must never do: the mutex is held across up-to-90s on-chain
+      // confirmations, and Stripe's sync reply window is a hard 2 seconds.
       const decision = decideAuthorization(deps.store, remitCardId, amountCents, nowS);
       approved = decision.approved;
       reason = decision.reason;

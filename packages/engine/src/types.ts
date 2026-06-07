@@ -104,7 +104,8 @@ export type Wire7702Auth = {
 // ---------------------------------------------------------------------------
 
 export type Receipt = {
-  status: "confirmed" | "pending" | "failed";
+  /** "settlement_unconfirmed": x402 content served but the seller echoed no on-chain proof */
+  status: "confirmed" | "pending" | "failed" | "settlement_unconfirmed";
   tx: Hex | null;
   to: Address;
   amount: string;

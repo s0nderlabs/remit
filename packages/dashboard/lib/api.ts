@@ -10,7 +10,7 @@ const BASE = process.env.NEXT_PUBLIC_REMIT_API ?? "http://localhost:4070/api";
 
 type Hex = `0x${string}`;
 type Wire7702Auth = { chainId: Hex; address: Hex; nonce: Hex; yParity: Hex; r: Hex; s: Hex };
-type WireDelegation = {
+export type WireDelegation = {
   delegator: Hex;
   delegate: Hex;
   authority: Hex;
@@ -103,12 +103,27 @@ export const api = {
   freeze: (id: string) => call<{ status: string }>(`/cards/${id}/freeze`, { method: "POST" }),
   unfreeze: (id: string) => call<{ status: string }>(`/cards/${id}/unfreeze`, { method: "POST" }),
 
-  // revoke/nuke are on-chain USER-signed ops (need a funded A_user). The dev lane signs
-  // them with the server key; the Privy lane will sign client-side (wired separately).
-  revoke: (id: string) => call<{ status: string; tx: string | null }>(`/cards/${id}/revoke`, { method: "POST" }),
-  nuke: (userId: string) =>
-    call<{ status: string; tx: string | null; new_nonce: string }>("/nuke", {
+  // --- on-chain USER-signed ops: the embedded wallet signs an admin leaf in the
+  // browser (prepare -> signDelegation -> finalize). Sub-card revokes come back
+  // immediately from prepare (server-side kill, nothing to sign). ---
+  prepareRevoke: (id: string) =>
+    call<
+      | { prepare_id: string; chain_id: number; kind: "revoke"; delegation: WireDelegation }
+      | { status: "revoked"; onchain: false }
+    >(`/cards/${id}/revoke/prepare`, { method: "POST", body: "{}" }),
+  finalizeRevoke: (id: string, prepareId: string, signature: string) =>
+    call<{ status: string; tx: string | null }>(`/cards/${id}/revoke/finalize`, {
       method: "POST",
-      body: JSON.stringify({ userId }),
+      body: JSON.stringify({ prepare_id: prepareId, signature }),
+    }),
+  prepareNuke: () =>
+    call<{ prepare_id: string; chain_id: number; kind: "nuke"; delegation: WireDelegation }>("/nuke/prepare", {
+      method: "POST",
+      body: "{}",
+    }),
+  finalizeNuke: (prepareId: string, signature: string) =>
+    call<{ status: string; tx: string | null; new_nonce: string }>("/nuke/finalize", {
+      method: "POST",
+      body: JSON.stringify({ prepare_id: prepareId, signature }),
     }),
 };

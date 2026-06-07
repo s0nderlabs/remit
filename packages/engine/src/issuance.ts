@@ -245,7 +245,15 @@ export async function issueSubCard(
 
   const user = store.getUser(parent.user_id);
   if (!user) throw new RefusalError("card_not_found", "parent card has no user");
-  const compiled = compileCard(childTerms, { chainId, revocationNonce: BigInt(user.revocation_nonce), now });
+  // NonceEnforcer caveat: the on-chain enforcer checks the nonce of THIS delegation's
+  // OWN delegator. A sub-card's delegator is the parent's bare-EOA K_agent, which never
+  // calls incrementNonce, so its NonceEnforcer nonce is always 0 — bind to that, NOT to
+  // A_user's revocation_nonce. (Using A_user's nonce only happened to work while it was
+  // 0; after the first nuke advances A_user's nonce, a sub-card compiled with that nonce
+  // reverts NonceEnforcer:invalid-nonce on every spend.) The NUKE still cascades to
+  // sub-cards through CHAIN validation: redeeming a sub validates the whole chain incl.
+  // the root's nonce caveat (bound to A_user), which the nonce bump invalidates.
+  const compiled = compileCard(childTerms, { chainId, revocationNonce: 0n, now });
 
   const { address: kSubAddress, encryptedPk } = await generateAgentKey();
   const child = buildChildDelegation({

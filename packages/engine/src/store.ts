@@ -61,7 +61,10 @@ export function deserializeCompiled(json: string): CompiledCard {
 // ---------------------------------------------------------------------------
 
 export type CardStatus = "active" | "frozen" | "revoked" | "nuked";
-export type ChargeStatus = "pending" | "confirmed" | "failed";
+// "settlement_unconfirmed": served but the seller echoed no on-chain proof (x402 bare 200).
+// Counts against budget (reservation held) but is NOT a proven on-chain settlement; kept
+// distinct from "confirmed" so the ledger never claims a confirmation the receipt disclaims.
+export type ChargeStatus = "pending" | "confirmed" | "failed" | "settlement_unconfirmed";
 export type ChargeKind = "pay" | "x402" | "execute" | "admin";
 
 export type UserRow = {
@@ -105,6 +108,9 @@ export type ChargeRow = {
   status: ChargeStatus;
   memo: string | null;
   created_at: number;
+  /** chain head captured at broadcast: the reconcile fee-leg scan starts here, so a
+   * landed log is never missed no matter how long the reconcile sweep was down. */
+  since_block?: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -160,7 +166,8 @@ export class Store {
         tx_hash TEXT,
         status TEXT NOT NULL,
         memo TEXT,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        since_block TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_charges_card ON charges(card_id, created_at);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_charges_idem
@@ -175,6 +182,11 @@ export class Store {
     const userCols = this.db.query(`PRAGMA table_info(users)`).all() as Array<{ name: string }>;
     if (!userCols.some((c) => c.name === "privy_did")) {
       this.db.exec(`ALTER TABLE users ADD COLUMN privy_did TEXT`);
+    }
+    // additive migration for DBs created before the reconcile fee-leg scan anchor existed
+    const chargeCols = this.db.query(`PRAGMA table_info(charges)`).all() as Array<{ name: string }>;
+    if (!chargeCols.some((c) => c.name === "since_block")) {
+      this.db.exec(`ALTER TABLE charges ADD COLUMN since_block TEXT`);
     }
     this.db.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy_did ON users(privy_did) WHERE privy_did IS NOT NULL`,
@@ -344,8 +356,8 @@ export class Store {
     this.db
       .query(
         `INSERT INTO charges (id, card_id, idempotency_key, kind, to_addr, amount_atoms, fee_atoms,
-                              request_id, tx_hash, status, memo, created_at)
-         VALUES ($id, $card, $idem, $kind, $to, $amount, $fee, $req, $tx, $status, $memo, $created)`,
+                              request_id, tx_hash, status, memo, created_at, since_block)
+         VALUES ($id, $card, $idem, $kind, $to, $amount, $fee, $req, $tx, $status, $memo, $created, $since)`,
       )
       .run({
         $id: ch.id,
@@ -360,16 +372,18 @@ export class Store {
         $status: ch.status,
         $memo: ch.memo,
         $created: ch.created_at,
+        $since: ch.since_block ?? null,
       });
   }
 
-  updateCharge(id: string, fields: { status?: ChargeStatus; tx_hash?: Hex; request_id?: string; fee_atoms?: bigint }): void {
+  updateCharge(id: string, fields: { status?: ChargeStatus; tx_hash?: Hex; request_id?: string; fee_atoms?: bigint; since_block?: bigint }): void {
     const sets: string[] = [];
     const params: Record<string, unknown> = { $id: id };
     if (fields.status !== undefined) { sets.push("status = $status"); params.$status = fields.status; }
     if (fields.tx_hash !== undefined) { sets.push("tx_hash = $tx"); params.$tx = fields.tx_hash; }
     if (fields.request_id !== undefined) { sets.push("request_id = $req"); params.$req = fields.request_id; }
     if (fields.fee_atoms !== undefined) { sets.push("fee_atoms = $fee"); params.$fee = fields.fee_atoms.toString(); }
+    if (fields.since_block !== undefined) { sets.push("since_block = $since"); params.$since = fields.since_block.toString(); }
     if (!sets.length) return;
     this.db.query(`UPDATE charges SET ${sets.join(", ")} WHERE id = $id`).run(params as never);
   }
@@ -389,11 +403,39 @@ export class Store {
       status: r.status as ChargeStatus,
       memo: (r.memo as string) ?? null,
       created_at: r.created_at as number,
+      since_block: (r.since_block as string) ?? null,
     };
   }
 
   getCharge(id: string): ChargeRow | null {
     return this.rowToCharge(this.db.query(`SELECT * FROM charges WHERE id = $id`).get({ $id: id }) as never);
+  }
+
+  deleteCharge(id: string): void {
+    this.db.query(`DELETE FROM charges WHERE id = $id`).run({ $id: id });
+  }
+
+  /** Pending charges that were broadcast (request_id set) but never confirmed, older
+   * than `before`. The reconcile sweep settles these against chain logs. */
+  pendingChargesOlderThan(before: number): ChargeRow[] {
+    const rows = this.db
+      .query(`SELECT * FROM charges WHERE status = 'pending' AND request_id IS NOT NULL AND created_at < $t`)
+      .all({ $t: before }) as never[];
+    return rows.map((r) => this.rowToCharge(r)!);
+  }
+
+  /** x402 reservations orphaned 'pending' (request_id IS NULL: never reached a relayer
+   * broadcast — the inline finalize was lost to a process restart or an unhandled throw),
+   * older than `before`. The reconcile sweep frees these so a dead reservation can't hold
+   * a card's budget forever. x402 settlement is the seller's, so there is no fee-leg log
+   * of ours to match — a long-stale reservation is conservatively released. */
+  pendingX402ChargesOlderThan(before: number): ChargeRow[] {
+    const rows = this.db
+      .query(
+        `SELECT * FROM charges WHERE status = 'pending' AND kind = 'x402' AND request_id IS NULL AND created_at < $t`,
+      )
+      .all({ $t: before }) as never[];
+    return rows.map((r) => this.rowToCharge(r)!);
   }
 
   chargeByIdempotency(cardId: string, key: string): ChargeRow | null {

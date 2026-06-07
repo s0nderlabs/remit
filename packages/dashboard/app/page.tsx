@@ -151,7 +151,17 @@ function Dashboard({ remit, address }: { remit: ReturnType<typeof useRemit>; add
       {tree.map((n) => (
         <Node key={n.card.card_id} node={n} />
       ))}
-      <Nuke />
+      {/* Nuke stays MOUNTED after a successful nuke: its phase="done" + basescan tx link
+          (the cascade-revoke proof on screen) live in component state, and unmounting on
+          the post-nuke refresh (no live cards left -> gate false) would wipe them ~1s
+          after success. The has-live gate moves INSIDE the component instead. */}
+      {tree.length > 0 && (
+        <Nuke
+          remit={remit}
+          onNuked={refresh}
+          hasLive={tree.some((n) => n.card.status === "active" || n.card.status === "frozen")}
+        />
+      )}
     </>
   );
 }
@@ -295,16 +305,84 @@ function Composer({
   );
 }
 
-// Cascade revoke (NonceEnforcer bump) is an on-chain USER-signed op. In the Privy lane
-// it needs a funded A_user + a client-signed admin leaf; that path is wired separately.
-// Shown here as the demo money-shot placeholder so the surface is legible.
-function Nuke() {
+// Cascade revoke (NonceEnforcer bump): ONE on-chain tx kills every card + sub-card
+// bound to the old nonce. The embedded wallet signs the admin leaf in the browser;
+// the relayer executes it gaslessly (the fee comes from A_user's USDC).
+function Nuke({
+  remit,
+  onNuked,
+  hasLive,
+}: {
+  remit: ReturnType<typeof useRemit>;
+  onNuked: () => void;
+  hasLive: boolean;
+}) {
+  const [phase, setPhase] = useState<"idle" | "confirm" | "signing" | "submitting" | "done" | "error">("idle");
+  const [tx, setTx] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  // nothing live to nuke and no success to show: render nothing (the parent keeps us
+  // mounted so a just-completed nuke's proof link survives the tree refresh)
+  if (!hasLive && phase !== "done") return null;
+
+  async function go() {
+    setErr(null);
+    try {
+      setPhase("signing");
+      const prep = await api.prepareNuke();
+      const signature = await remit.signDelegation(prep.delegation);
+      setPhase("submitting");
+      const fin = await api.finalizeNuke(prep.prepare_id, signature);
+      setTx(fin.tx);
+      setPhase("done");
+      onNuked();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setPhase("error");
+    }
+  }
+
   return (
     <>
       <h2>nuke</h2>
-      <div className="panel mono" style={{ color: "#666" }}>
-        cascade revoke (one on-chain tx kills every card + sub-card via the NonceEnforcer bump).
-        on-chain ops are signed by your embedded wallet and require a funded A_user — wired next.
+      <div className="panel">
+        <div className="row" style={{ gap: 10 }}>
+          {phase === "done" ? (
+            <span className="mono" data-testid="nuke-done">
+              nuked ✓ every card is dead.{" "}
+              {tx && (
+                <a href={`https://basescan.org/tx/${tx}`} target="_blank" rel="noreferrer">
+                  {tx.slice(0, 10)}…
+                </a>
+              )}
+            </span>
+          ) : phase === "signing" || phase === "submitting" ? (
+            <span className="mono" data-testid="nuke-busy">
+              {phase === "signing" ? "signing with your wallet…" : "one tx, killing the whole tree…"}
+            </span>
+          ) : phase === "confirm" ? (
+            <>
+              <span className="err mono">kill EVERY card and sub-card, permanently, on-chain?</span>
+              <button className="ghost" onClick={go} data-testid="nuke-confirm">yes, nuke everything</button>
+              <button className="ghost" onClick={() => setPhase("idle")}>cancel</button>
+            </>
+          ) : (
+            <>
+              <button
+                className="ghost"
+                disabled={!remit.embeddedReady}
+                onClick={() => setPhase("confirm")}
+                data-testid="nuke"
+              >
+                nuke all cards
+              </button>
+              <span className="mono" style={{ color: "#666" }}>
+                cascade revoke: one on-chain tx (NonceEnforcer bump) kills the entire tree
+              </span>
+            </>
+          )}
+        </div>
+        {err && <p className="err mono">nuke failed: {err}</p>}
       </div>
     </>
   );

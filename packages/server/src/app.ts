@@ -40,7 +40,7 @@ export function createApp(deps: AppDeps): Hono {
   // the demo seller settles through OUR facilitator (same process, real HTTP)
   app.route(
     "/",
-    sellerRoutes(deps, () => process.env.REMIT_FACILITATOR_BASE ?? `http://localhost:${process.env.PORT ?? 3000}/facilitator`),
+    sellerRoutes(deps, () => process.env.REMIT_FACILITATOR_BASE ?? `http://localhost:${process.env.PORT ?? 4070}/facilitator`),
   );
 
   return app;

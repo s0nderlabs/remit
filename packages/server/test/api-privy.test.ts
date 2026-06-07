@@ -11,7 +11,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
+  KeyedMutex,
   Store,
+  issueSubCard,
   userSmartAccount,
   signWithSmartAccount,
   type Relayer,
@@ -34,13 +36,28 @@ beforeAll(() => {
   // unreachable RPC: onboard's on-chain nonce read fails fast and falls back to 0
   process.env.REMIT_RPC_URL = "http://127.0.0.1:1";
   store = new Store(":memory:");
+  // minimal scripted relayer: enough for the client-signed admin ops (revoke/nuke)
+  const fakeRelayer = {
+    getFeeData: async () => ({ minFee: "0.01", rate: 1, gasPrice: "1", expiry: 0, feeCollector: "0x0", targetAddress: "0x0", context: "ctx" }),
+    estimate: async () => ({ success: true, requiredPaymentAmount: "10000", context: "ctx-ok", error: null, raw: null }),
+    send: async () => "0xrequestid",
+    getStatus: async () => ({ status: 200, txHash: "0xadm1", raw: null }),
+    waitForStatus: async () => ({ status: 200, txHash: "0xadm1", raw: null, timedOut: false }),
+  };
   const deps: AppDeps = {
+    spendMutex: new KeyedMutex(),
     store,
-    relayer: {} as unknown as Relayer, // this lane never touches the relayer
+    relayer: fakeRelayer as unknown as Relayer,
     userSigner: null,
     adminToken: ADMIN,
     // fake Privy verifier: "pt-<name>" is a valid session for did:privy:<name>
     verifyPrivyToken: async (token) => (token.startsWith("pt-") ? { did: `did:privy:${token.slice(3)}` } : null),
+    opsOverrides: {
+      codeCheck: async () => true,
+      confirmViaChain: false,
+      feeJitter: (b) => b,
+      revocationNonceOverride: 7n,
+    },
   };
   server = Bun.serve({ port: 0, fetch: createApp(deps).fetch });
   base = `http://localhost:${server.port}`;
@@ -280,5 +297,122 @@ describe("Privy session auth + per-user scoping", () => {
       card_id: string;
     };
     expect((await postAs(ALICE, `/api/cards/${fin.card_id}/revoke`, {})).status).toBe(403);
+  });
+
+  // ---- client-signed revoke/nuke (prepare -> browser signs the admin leaf -> finalize) ----
+
+  describe("client-signed revoke/nuke", () => {
+    const issueFor = async (bearer: string, acct: typeof alice, name: string, t: object = terms) => {
+      const prep = (await (await postAs(bearer, "/api/cards/prepare", { name, terms: t })).json()) as {
+        prepare_id: string;
+        delegation: WireDelegation;
+      };
+      const smart = await userSmartAccount(acct, 8453);
+      const signed = await signWithSmartAccount(smart, prep.delegation, 8453);
+      return (await (await postAs(bearer, "/api/cards/finalize", { prepare_id: prep.prepare_id, signature: signed.signature })).json()) as {
+        card_id: string;
+      };
+    };
+    const signAdminLeaf = async (acct: typeof alice, delegation: WireDelegation) => {
+      const smart = await userSmartAccount(acct, 8453);
+      return (await signWithSmartAccount(smart, delegation, 8453)).signature;
+    };
+
+    test("prepare returns the admin leaf for the OWNER; foreign cards look nonexistent", async () => {
+      const card = await issueFor(ALICE, alice, "to-revoke-1");
+      // bob probing alice's card: card_not_found, indistinguishable from nonexistent
+      const foreign = await postAs(BOB, `/api/cards/${card.card_id}/revoke/prepare`, {});
+      expect(foreign.status).toBe(422);
+      expect(((await foreign.json()) as { code: string }).code).toBe("card_not_found");
+
+      const res = await postAs(ALICE, `/api/cards/${card.card_id}/revoke/prepare`, {});
+      expect(res.status).toBe(200);
+      const prep = (await res.json()) as { prepare_id: string; kind: string; delegation: WireDelegation };
+      expect(prep.kind).toBe("revoke");
+      expect(prep.delegation.signature).toBe("0x");
+      expect(prep.delegation.delegator.toLowerCase()).toBe(alice.address.toLowerCase());
+    });
+
+    test("wrong-key signature is refused and the prepare stays retryable; then the real one revokes", async () => {
+      const card = await issueFor(ALICE, alice, "to-revoke-2");
+      const prep = (await (await postAs(ALICE, `/api/cards/${card.card_id}/revoke/prepare`, {})).json()) as {
+        prepare_id: string;
+        delegation: WireDelegation;
+      };
+
+      const badSig = await signAdminLeaf(bob, prep.delegation);
+      const bad = await postAs(ALICE, `/api/cards/${card.card_id}/revoke/finalize`, {
+        prepare_id: prep.prepare_id,
+        signature: badSig,
+      });
+      expect(bad.status).toBe(422);
+      expect(store.getCard(card.card_id)!.status).toBe("active");
+
+      // bob cannot finalize alice's prepare either (his view: no such card)
+      const hijack = await postAs(BOB, `/api/cards/${card.card_id}/revoke/finalize`, {
+        prepare_id: prep.prepare_id,
+        signature: badSig,
+      });
+      expect(hijack.status).toBe(422);
+
+      const goodSig = await signAdminLeaf(alice, prep.delegation);
+      const fin = await postAs(ALICE, `/api/cards/${card.card_id}/revoke/finalize`, {
+        prepare_id: prep.prepare_id,
+        signature: goodSig,
+      });
+      expect(fin.status).toBe(200);
+      const body = (await fin.json()) as { status: string; tx: string };
+      expect(body.status).toBe("revoked");
+      expect(body.tx).toBe("0xadm1");
+      expect(store.getCard(card.card_id)!.status).toBe("revoked");
+
+      // single-use: a verified prepare can never finalize twice
+      const replay = await postAs(ALICE, `/api/cards/${card.card_id}/revoke/finalize`, {
+        prepare_id: prep.prepare_id,
+        signature: goodSig,
+      });
+      expect(replay.status).toBe(422);
+    });
+
+    test("sub-card revoke needs no signature: server-side kill, parent untouched", async () => {
+      const parent = await issueFor(ALICE, alice, "subcard-parent", {
+        pay: { period: { amount: "10", seconds: 604800 } },
+        subcards: true,
+      });
+      const sub = await issueSubCard({ store }, { parentCardId: parent.card_id, name: "sub", terms: {} });
+
+      const res = await postAs(ALICE, `/api/cards/${sub.cardId}/revoke/prepare`, {});
+      expect(res.status).toBe(200);
+      expect((await res.json()) as object).toEqual({ status: "revoked", onchain: false });
+      expect(store.getCard(sub.cardId)!.status).toBe("revoked");
+      expect(store.getCard(parent.card_id)!.status).toBe("active");
+    });
+
+    test("nuke: prepare is pinned to the session user, finalize kills the whole tree", async () => {
+      const survivorBob = await issueFor(BOB, bob, "bob-survivor");
+
+      const prepRes = await postAs(ALICE, "/api/nuke/prepare", { userId: bob.address.toLowerCase() }); // hostile param ignored
+      expect(prepRes.status).toBe(200);
+      const prep = (await prepRes.json()) as { prepare_id: string; kind: string; delegation: WireDelegation };
+      expect(prep.kind).toBe("nuke");
+      expect(prep.delegation.delegator.toLowerCase()).toBe(alice.address.toLowerCase());
+
+      // bob cannot finalize alice's nuke
+      const sig = await signAdminLeaf(alice, prep.delegation);
+      expect((await postAs(BOB, "/api/nuke/finalize", { prepare_id: prep.prepare_id, signature: sig })).status).toBe(422);
+
+      const fin = await postAs(ALICE, "/api/nuke/finalize", { prepare_id: prep.prepare_id, signature: sig });
+      expect(fin.status).toBe(200);
+      const body = (await fin.json()) as { status: string; tx: string; new_nonce: string };
+      expect(body.status).toBe("nuked");
+      expect(body.new_nonce).toBe("7");
+
+      // every one of alice's cards is dead; bob's survives
+      for (const card of store.listCards(alice.address.toLowerCase())) {
+        expect(card.status).toBe("nuked");
+      }
+      expect(store.getCard(survivorBob.card_id)!.status).toBe("active");
+      expect(store.getUser(alice.address.toLowerCase())!.revocation_nonce).toBe("7");
+    });
   });
 });

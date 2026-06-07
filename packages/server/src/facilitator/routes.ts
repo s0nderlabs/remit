@@ -11,6 +11,7 @@ import {
   settleX402,
   verifyX402,
   EngineError,
+  RefusalError,
   type X402PayloadBody,
   type X402Requirement,
 } from "@remit/engine";
@@ -84,7 +85,11 @@ export function facilitatorRoutes(deps: AppDeps): Hono {
       const result = await verifyX402(settleDeps(), parsed.payload, parsed.req);
       return c.json(result);
     } catch (e) {
-      return c.json({ isValid: false, invalidReason: e instanceof Error ? e.message : String(e) }, 500);
+      // engine refusals/errors carry stable, sanitized messages; anything else
+      // (RPC internals, stack-bearing strings) collapses to a stable reason so
+      // internal details never reach a third-party buyer
+      const reason = e instanceof EngineError || e instanceof RefusalError ? e.message : "verification_error";
+      return c.json({ isValid: false, invalidReason: reason }, 500);
     }
   });
 
