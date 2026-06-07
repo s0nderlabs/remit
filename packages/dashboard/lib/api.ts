@@ -97,6 +97,7 @@ export const api = {
 
   // --- reads + server-side controls (scoped to the embedded-wallet userId) ---
   tree: (userId: string) => call<{ tree: TreeNode[] }>(`/tree?userId=${encodeURIComponent(userId)}`),
+  cards: () => call<CardState[]>("/cards"),
   card: (id: string) => call<CardState & { charges: Charge[]; k_agent_address: string }>(`/cards/${id}`),
   url: (id: string) => call<{ card_url: string }>(`/cards/${id}/url`),
   rotate: (id: string) => call<{ card_url: string }>(`/cards/${id}/rotate`, { method: "POST" }),
@@ -125,5 +126,25 @@ export const api = {
     call<{ status: string; tx: string | null; new_nonce: string }>("/nuke/finalize", {
       method: "POST",
       body: JSON.stringify({ prepare_id: prepareId, signature }),
+    }),
+
+  // --- OAuth consent (the /connect card-picker page) ---
+  oauthRequest: (id: string) =>
+    call<{
+      request_id: string;
+      client_name: string | null;
+      redirect_host: string;
+      scope: string | null;
+      expires_at: number;
+    }>(`/oauth/request?id=${encodeURIComponent(id)}`),
+  oauthApprove: (requestId: string, cardId: string) =>
+    call<{ redirect_to: string }>("/oauth/approve", {
+      method: "POST",
+      body: JSON.stringify({ request_id: requestId, card_id: cardId }),
+    }),
+  oauthDeny: (requestId: string) =>
+    call<{ redirect_to: string }>("/oauth/deny", {
+      method: "POST",
+      body: JSON.stringify({ request_id: requestId }),
     }),
 };

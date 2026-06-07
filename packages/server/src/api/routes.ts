@@ -43,6 +43,8 @@ import {
 } from "@remit/engine";
 import type { AppDeps } from "../deps";
 import { cardUrl } from "../mcp/server";
+import { appendRedirectParams } from "../oauth/routes";
+import type { OAuthStore } from "../oauth/store";
 import { onboardProofMessage } from "./privy";
 
 /** Privy-lane user id convention: the embedded (A_user) address, lowercased. One
@@ -62,7 +64,7 @@ type AuthCtx = { kind: "admin" } | { kind: "privy"; did: string };
 /** Auth/scoping failure: a 403, distinct from engine refusals (422). */
 class ForbiddenError extends Error {}
 
-export function apiRoutes(deps: AppDeps): Hono<{ Variables: { auth: AuthCtx } }> {
+export function apiRoutes(deps: AppDeps, oauth: OAuthStore): Hono<{ Variables: { auth: AuthCtx } }> {
   const app = new Hono<{ Variables: { auth: AuthCtx } }>();
   const now = () => Math.floor(Date.now() / 1000);
 
@@ -90,6 +92,16 @@ export function apiRoutes(deps: AppDeps): Hono<{ Variables: { auth: AuthCtx } }>
   };
   /** finalize deps for client-signed admin ops (test seams ride in via opsOverrides) */
   const adminFinalizeDeps = () => ({ store: deps.store, relayer: deps.relayer, ...(deps.opsOverrides ?? {}) });
+
+  // Cascade OAuth-token revocation alongside card revoke/nuke. The /mcp lane already
+  // rejects a revoked card's token at request time; this keeps the token ledger honest
+  // (no live-looking grant rows survive a dead card). Subtree-wide, mirroring the chain.
+  const cascadeRevokeTokens = (cardId: string) => {
+    for (const id of deps.store.subtreeIds(cardId)) oauth.revokeTokensByCardId(id);
+  };
+  const cascadeRevokeUserTokens = (userId: string) => {
+    for (const card of deps.store.listCards(userId)) oauth.revokeTokensByCardId(card.id);
+  };
 
   // ---- auth: admin token (ops) OR verified Privy session (dashboard) ----
   app.use("*", async (c: Context<{ Variables: { auth: AuthCtx } }>, next: Next) => {
@@ -362,7 +374,10 @@ export function apiRoutes(deps: AppDeps): Hono<{ Variables: { auth: AuthCtx } }>
       gcAdmin();
       const card = ownedCard(c, c.req.param("id"));
       const result = prepareRevoke({ store: deps.store }, card.id);
-      if ("done" in result) return { status: "revoked", onchain: false };
+      if ("done" in result) {
+        cascadeRevokeTokens(card.id); // sub-card killed server-side: its grants die too
+        return { status: "revoked", onchain: false };
+      }
       pendingAdmin.set(result.prepareId, { prepared: result, expires: Date.now() + ADMIN_TTL_MS });
       return {
         prepare_id: result.prepareId,
@@ -400,6 +415,7 @@ export function apiRoutes(deps: AppDeps): Hono<{ Variables: { auth: AuthCtx } }>
           // retryable until the TTL; a verified one must never finalize twice)
           onValidated: () => pendingAdmin.delete(body.prepare_id!),
         });
+        cascadeRevokeTokens(card.id);
         return { status: "revoked", tx: result.txHash };
       } finally {
         entry.inProgress = false; // no-op if consumed; re-arms retry on a bad signature
@@ -443,6 +459,7 @@ export function apiRoutes(deps: AppDeps): Hono<{ Variables: { auth: AuthCtx } }>
         const result = await finalizeAdminOp(adminFinalizeDeps(), entry.prepared, body.signature, {
           onValidated: () => pendingAdmin.delete(body.prepare_id!),
         });
+        cascadeRevokeUserTokens(entry.prepared.userId);
         return { status: "nuked", tx: result.txHash, new_nonce: result.newNonce!.toString() };
       } finally {
         entry.inProgress = false;
@@ -461,6 +478,7 @@ export function apiRoutes(deps: AppDeps): Hono<{ Variables: { auth: AuthCtx } }>
         { store: deps.store, relayer: deps.relayer, userSigner: deps.userSigner },
         card.id,
       );
+      cascadeRevokeTokens(card.id);
       return { status: "revoked", tx: result.txHash };
     }),
   );
@@ -470,11 +488,104 @@ export function apiRoutes(deps: AppDeps): Hono<{ Variables: { auth: AuthCtx } }>
       adminOnly(c); // server-signed; the privy lane gets a client-signed nuke (wired separately)
       if (!deps.userSigner) throw new EngineError("api", "no dev signer configured");
       const body = (await c.req.json().catch(() => ({}))) as { userId?: string };
+      const nukeUserId = normUserId(body.userId ?? "elpabl0-dev");
       const result = await nukeAll(
         { store: deps.store, relayer: deps.relayer, userSigner: deps.userSigner },
-        normUserId(body.userId ?? "elpabl0-dev"),
+        nukeUserId,
       );
+      cascadeRevokeUserTokens(nukeUserId);
       return { status: "nuked", tx: result.txHash, new_nonce: result.newNonce.toString() };
+    }),
+  );
+
+  // ---- OAuth consent (the card-picker backend) ----
+  // /authorize (oauth/routes.ts) 302s the browser to the dashboard /connect page,
+  // which drives these through the normal Privy-authed API. The code is bound to the
+  // LIVE session's user at approve time (confused-deputy guard: a registered client_id
+  // alone can never reuse another user's grant). The request itself is claim-once bound
+  // to the first logged-in user that loads it, so a second login can't read or cancel it.
+
+  /** The authenticated user's own id (privy lane = bound wallet; admin lane = its picked id). */
+  const consentUserId = (c: Context<{ Variables: { auth: AuthCtx } }>): string =>
+    c.get("auth").kind === "privy" ? boundUser(c).id : normUserId(c.req.query("userId") ?? "elpabl0-dev");
+
+  /** Load an authorization request, claiming/enforcing this user's ownership. */
+  const ownedRequest = (c: Context<{ Variables: { auth: AuthCtx } }>, requestId: string) => {
+    const r = oauth.getRequest(requestId);
+    if (!r) throw new RefusalError("invalid_terms", "unknown or expired authorization request");
+    if (!oauth.bindRequestUser(requestId, consentUserId(c))) {
+      // bound to a different login: indistinguishable from not-found
+      throw new RefusalError("invalid_terms", "unknown or expired authorization request");
+    }
+    return r;
+  };
+
+  app.get("/oauth/request", (c) =>
+    handle(c, async () => {
+      const id = c.req.query("id");
+      if (!id) throw new RefusalError("invalid_terms", "id required");
+      const r = ownedRequest(c, id);
+      const client = oauth.getClient(r.client_id);
+      let redirectHost = r.redirect_uri;
+      try {
+        redirectHost = new URL(r.redirect_uri).host || r.redirect_uri;
+      } catch {}
+      return {
+        request_id: r.request_id,
+        client_name: client?.client_name ?? null,
+        redirect_host: redirectHost,
+        scope: r.scope,
+        expires_at: r.expires_at,
+      };
+    }),
+  );
+
+  app.post("/oauth/approve", (c) =>
+    handle(c, async () => {
+      const body = (await c.req.json()) as { request_id?: string; card_id?: string };
+      if (!body.request_id || !body.card_id) {
+        throw new RefusalError("invalid_terms", "request_id and card_id required");
+      }
+      const r = ownedRequest(c, body.request_id);
+      const card = ownedCard(c, body.card_id); // foreign cards look nonexistent
+      // liveness through cardState so a time-EXPIRED card (still stored 'active') is rejected
+      // alongside revoked/nuked — never mint a connect token for a card the user believes is dead.
+      const state = cardState(deps.store, card.id, now());
+      if (!state || state.status === "revoked" || state.status === "nuked" || state.status === "expired") {
+        throw new RefusalError("card_revoked", "this card is no longer live");
+      }
+      oauth.deleteRequest(body.request_id); // single-use: a back-button replay finds nothing
+      const code = oauth.createCode(
+        {
+          client_id: r.client_id,
+          redirect_uri: r.redirect_uri,
+          code_challenge: r.code_challenge,
+          card_id: card.id,
+          user_id: card.user_id,
+          resource: r.resource,
+          scope: r.scope,
+        },
+        120, // the redirect -> token exchange is automated; 2 minutes is generous
+      );
+      return {
+        redirect_to: appendRedirectParams(r.redirect_uri, { code, ...(r.state ? { state: r.state } : {}) }),
+      };
+    }),
+  );
+
+  app.post("/oauth/deny", (c) =>
+    handle(c, async () => {
+      const body = (await c.req.json()) as { request_id?: string };
+      if (!body.request_id) throw new RefusalError("invalid_terms", "request_id required");
+      const r = ownedRequest(c, body.request_id);
+      oauth.deleteRequest(body.request_id);
+      return {
+        redirect_to: appendRedirectParams(r.redirect_uri, {
+          error: "access_denied",
+          error_description: "the user denied the request",
+          ...(r.state ? { state: r.state } : {}),
+        }),
+      };
     }),
   );
 

@@ -2,6 +2,23 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.4.0] - 2026-06-07
+
+The OAuth lane: OAuth-only MCP clients (notably ChatGPT) can now connect a card.
+
+### Added
+
+- **OAuth 2.1 authorization lane (lane C)**: remit self-hosts the bounded authorization-server profile — RFC 9728 protected-resource metadata (path-aware + root), RFC 8414 AS metadata, open RFC 7591 dynamic client registration, authorization-code grant with PKCE S256 only, public clients (`token_endpoint_auth_method: none`), RFC 8707 resource round-trip with mint-time audience pinning, rotating refresh tokens with family reuse-detection, and RFC 7009 revocation. Adding the bare `/mcp` URL with no credential triggers discovery via `WWW-Authenticate` on the 401.
+- **Card-picker consent** (`/connect` on the dashboard): the user signs in with the existing Privy session and picks WHICH card to grant; the agent receives an opaque, short-lived, card-scoped token (sha-256 hash-stored beside the card secrets) and never the raw card secret. Authorization requests are claim-once bound to the first login that opens them; approval is single-use and re-checks card liveness (revoked/nuked/expired all refuse).
+- **Token lifecycle tied to the card**: revoking or nuking a card revokes every OAuth grant issued for it (all five revoke/nuke paths cascade); per-token revocation works independently of the card; a replayed authorization code or rotated-out refresh token kills its whole token family.
+- OAuth endpoint hardening: per-IP rate limits on register/authorize/token, body caps that also bound chunked requests, redirect-URI policy (https any host unless `REMIT_OAUTH_REDIRECT_HOSTS` restricts it, http loopback-only, custom client schemes allowed), exact-string redirect building that preserves `cursor://`-style URIs, and a consent page that flags the self-reported client name and shows the redirect destination before granting.
+- New env knobs: `REMIT_DASHBOARD_BASE` (consent page origin), `REMIT_OAUTH_ACCESS_TTL` / `REMIT_OAUTH_REFRESH_TTL`, `REMIT_OAUTH_REDIRECT_HOSTS`, `REMIT_OAUTH_ACCEPTED_RESOURCES` (legacy audience values during a base-URL migration), `REMIT_OAUTH_*_LIMIT` rate ceilings, `REMIT_TRUST_PROXY_HOPS`.
+
+### Changed
+
+- Bare `/mcp` 401s now carry the `WWW-Authenticate: Bearer resource_metadata="..."` discovery header. The static-secret lanes (`/c/<secret>/mcp` and `Authorization: Bearer <card-secret>`) are byte-for-byte unchanged — a valid credential never 401s, so existing clients never see OAuth at all.
+- Client-IP extraction for rate limiting honors `REMIT_TRUST_PROXY_HOPS` instead of hard-coding the single-proxy assumption.
+
 ## [0.3.0] - 2026-06-07
 
 Client-signed revocation, MCP hardening, and a correctness pass over the money paths.

@@ -10,11 +10,15 @@ import type { AppDeps } from "./deps";
 import { mcpRoutes } from "./mcp/routes";
 import { apiRoutes } from "./api/routes";
 import { facilitatorRoutes } from "./facilitator/routes";
+import { oauthRoutes } from "./oauth/routes";
+import { OAuthStore } from "./oauth/store";
 import { sellerRoutes } from "./seller/routes";
 import { stripeRoutes } from "./stripe/routes";
 
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
+  // OAuth lane storage rides the same sqlite database as the engine store
+  const oauth = new OAuthStore(deps.store.db);
 
   app.get("/health", (c) =>
     c.json({ ok: true, engine: ENGINE_VERSION, host: c.req.header("host") ?? null }),
@@ -33,8 +37,9 @@ export function createApp(deps: AppDeps): Hono {
     }),
   );
 
-  app.route("/", mcpRoutes(deps));
-  app.route("/api", apiRoutes(deps));
+  app.route("/", oauthRoutes(deps, oauth));
+  app.route("/", mcpRoutes(deps, oauth));
+  app.route("/api", apiRoutes(deps, oauth));
   app.route("/facilitator", facilitatorRoutes(deps));
   app.route("/", stripeRoutes(deps));
   // the demo seller settles through OUR facilitator (same process, real HTTP)

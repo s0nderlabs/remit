@@ -51,7 +51,7 @@ Refusals are typed (`over_period_limit`, `merchant_not_allowed`, `price_exceeds_
 
 ## Connecting a card to an agent
 
-Two equivalent lanes, both per-card credentials:
+Three lanes. The first two carry a per-card credential directly; the third is OAuth, where the agent never holds the card secret.
 
 ```bash
 # Lane A: secret in the URL path (works everywhere, treat the URL as a password)
@@ -62,7 +62,15 @@ claude mcp add --transport http remit https://<host>/mcp \
   --header "Authorization: Bearer <card-secret>"
 ```
 
-The same URL works in Cursor, VS Code, Gemini CLI, Windsurf, claude.ai custom connectors, or any MCP client that speaks Streamable HTTP. Rotate the secret any time from the dashboard; the old URL dies instantly.
+Lanes A and B work in Cursor, VS Code, Gemini CLI, Windsurf, claude.ai custom connectors, or any MCP client that speaks Streamable HTTP. Rotate the secret any time from the dashboard; the old URL dies instantly.
+
+**Lane C: OAuth 2.1 (card-picker consent).** Add the bare endpoint with no credential:
+
+```bash
+claude mcp add --transport http remit https://<host>/mcp
+```
+
+The client discovers the OAuth lane (RFC 9728 protected-resource metadata on the `401`), registers itself (Dynamic Client Registration), and opens a browser. You sign in with your existing dashboard login and **pick which card to grant**. The agent receives a short-lived, card-scoped, independently revocable access token, never the raw card secret. This is the lane OAuth-only clients such as **ChatGPT** require; it also works in Claude Code, claude.ai, Cursor, and VS Code. The server is a self-hosted OAuth authorization server (public clients, PKCE S256, rotating refresh tokens); revoking the card kills every token issued for it.
 
 ## Architecture
 
@@ -83,6 +91,7 @@ Key pieces:
 - **Sub-cards**: ERC-7710 redelegations. Caps only narrow. Revoking a parent kills the subtree.
 - **Two payment rails off one delegation**: x402 (real USDC, live) and Stripe Issuing real-time auth (test mode, fiat leg simulated honestly).
 - **MCP server**: stateless Streamable HTTP, identity = the card credential on every request, no sessions.
+- **OAuth lane** (`server/src/oauth/`): a self-hosted OAuth 2.1 authorization server (RFC 9728 + RFC 8414 discovery, RFC 7591 dynamic client registration, PKCE S256, RFC 8707 resource binding, rotating refresh tokens, RFC 7009 revocation). Login and the card-picker consent reuse the existing Privy dashboard session; issued tokens are opaque, card-scoped, hash-stored beside the card secrets, and die when the card is revoked.
 
 ### Contracts (Base mainnet)
 
@@ -142,8 +151,13 @@ bun run typecheck        # per-package tsc
 | `REMIT_SELLER_PAYTO` | no | payout address for the built-in demo seller |
 | `REMIT_PAID_FETCH_ALLOW_LOCAL` | no | allow `paid_fetch` to hit local/private hosts (dev only) |
 | `REMIT_STRIPE_WEBHOOK_SECRET` | no | Stripe real-time auth webhook signing secret (test mode); unset = the fiat leg answers 503 (disabled) |
+| `REMIT_DASHBOARD_BASE` | OAuth lane | dashboard origin that hosts the OAuth consent (card-picker) page (default `http://localhost:4071`) |
 | `REMIT_RECONCILE_INTERVAL_MS` | no | stuck-pending-charge reconcile sweep interval (default 300000; 0 disables) |
 | `REMIT_MCP_RATE_LIMIT` / `REMIT_MCP_BAD_SECRET_LIMIT` | no | per-card and per-IP-bad-secret request ceilings per minute (defaults 240 / 30) |
+| `REMIT_OAUTH_ACCESS_TTL` / `REMIT_OAUTH_REFRESH_TTL` | no | OAuth access / refresh token lifetimes in seconds (defaults 3600 / 2592000) |
+| `REMIT_OAUTH_REDIRECT_HOSTS` | no | if set, restricts OAuth `https` redirect-URI hosts to this allowlist (loopback + custom schemes always allowed; recommended in prod) |
+| `REMIT_OAUTH_ACCEPTED_RESOURCES` | no | extra RFC 8707 resource URIs still honored (legacy values during a base-URL migration) |
+| `REMIT_TRUST_PROXY_HOPS` | no | trusted proxy hops for client-IP rate limiting (default 1 = Railway edge; 0 disables XFF trust) |
 | `NEXT_PUBLIC_PRIVY_APP_ID` / `NEXT_PUBLIC_PRIVY_CLIENT_ID` | dashboard | Privy app credentials (public identifiers, not secrets) |
 | `NEXT_PUBLIC_REMIT_API` | dashboard | server API base, e.g. `http://localhost:4070/api` |
 | `NEXT_PUBLIC_BASE_RPC` | dashboard | Base RPC for client-side reads |
