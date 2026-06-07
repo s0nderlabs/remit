@@ -2,6 +2,31 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.2.0] - 2026-06-07
+
+Auth model change: the dashboard now authenticates as the USER.
+
+### Added
+
+- **Per-user API auth (Privy session lane)**: `/api/*` accepts the signed-in user's Privy access token as the bearer, verified offline against the app's JWKS (ES256, `iss privy.io`, `aud` = app id; `REMIT_PRIVY_APP_ID`). No Privy app secret and no per-request Privy API call.
+- **Onboard proof**: the embedded wallet signs `remit-onboard:v1:<did>` (personal_sign) at onboard, proving key possession bound to that specific Privy login. The DID inside the message makes the signature non-replayable by any other login (covers the case where a signed 7702 authorization later becomes public on-chain). Wallet-to-login bindings are 1:1 and conflict-checked, with a unique index on `users.privy_did` (additive migration).
+- **Per-user scoping on every card route**: reads (`/cards`, `/cards/:id`, `/tree`), secret operations (`/url`, `/rotate`) and controls (`/freeze`, `/unfreeze`, `/revoke`) answer only for the authenticated user's own cards; foreign cards are indistinguishable from nonexistent ones. `prepare` is pinned to the session's wallet, `finalize` only accepts the session's own prepare ids, and the server-signed ops (`POST /cards`, `/nuke`) are admin-only.
+
+### Changed
+
+- `REMIT_ADMIN_TOKEN` is now strictly the server-side ops lane (full access, curl/scripts); the admin bearer compare is constant-time.
+- Dashboard sends the Privy session token on every API call (`getAccessToken()`), and `NEXT_PUBLIC_REMIT_ADMIN_TOKEN` is gone: the client bundle no longer contains any shared secret.
+
+### Fixed
+
+- `POST /cards/:id/revoke` is now admin-only like its sibling server-signed ops (`POST /cards`, `/nuke`): a Privy session could previously reach an on-chain revocation signed by the server's dev key (the wrong delegator) against its own card.
+- Switching Privy accounts in the same browser tab now re-runs onboarding for the new identity instead of looping 403s behind stale React state.
+- Dashboard API errors with non-JSON bodies (edge/proxy HTML on 502/503) surface as clean `http <status>` errors instead of raw JSON parse exceptions.
+
+### Removed
+
+- The HTTP basic-auth deployment gate (`packages/dashboard/proxy.ts` and `DASH_BASIC_USER`/`DASH_BASIC_PASS`): it existed solely to shield the admin token embedded in the bundle, and that token no longer exists.
+
 ## [0.1.1] - 2026-06-06
 
 ### Added

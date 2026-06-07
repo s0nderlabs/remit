@@ -130,7 +130,8 @@ bun run typecheck        # per-package tsc
 | Var | Required | Purpose |
 |---|---|---|
 | `REMIT_MASTER_KEY` | yes | 32-byte hex key; encrypts agent keys and card secrets at rest |
-| `REMIT_ADMIN_TOKEN` | yes | bearer token for the management API (`/api/*`) |
+| `REMIT_ADMIN_TOKEN` | yes | ops bearer token for the management API (`/api/*`): full access, server-side scripts only, never shipped to a browser |
+| `REMIT_PRIVY_APP_ID` | dashboard lane | enables per-user API auth: Privy access tokens verified offline against the app's JWKS; every route scoped to the authenticated user |
 | `PORT` | no | server port (default 4070) |
 | `REMIT_DB_PATH` | no | SQLite path (default `.dev/remit.sqlite`) |
 | `REMIT_RPC_URL` | no | Base RPC (default `https://mainnet.base.org`) |
@@ -141,15 +142,17 @@ bun run typecheck        # per-package tsc
 | `REMIT_SELLER_PAYTO` | no | payout address for the built-in demo seller |
 | `REMIT_PAID_FETCH_ALLOW_LOCAL` | no | allow `paid_fetch` to hit local/private hosts (dev only) |
 | `REMIT_STRIPE_WEBHOOK_SECRET` | no | Stripe real-time auth webhook signature secret (test mode) |
-| `NEXT_PUBLIC_PRIVY_APP_ID` / `NEXT_PUBLIC_PRIVY_CLIENT_ID` | dashboard | Privy app credentials |
+| `NEXT_PUBLIC_PRIVY_APP_ID` / `NEXT_PUBLIC_PRIVY_CLIENT_ID` | dashboard | Privy app credentials (public identifiers, not secrets) |
 | `NEXT_PUBLIC_REMIT_API` | dashboard | server API base, e.g. `http://localhost:4070/api` |
-| `NEXT_PUBLIC_REMIT_ADMIN_TOKEN` | dashboard | admin token used by the dashboard (dev posture) |
 | `NEXT_PUBLIC_BASE_RPC` | dashboard | Base RPC for client-side reads |
-| `DASH_BASIC_USER` / `DASH_BASIC_PASS` | dashboard deploys | server-side only (never `NEXT_PUBLIC_`): HTTP basic auth over the whole dashboard, assets included. Both unset = open (local dev); one set = fail closed. The dashboard's origin must also be in the server's `REMIT_CORS_ORIGINS` |
+
+The dashboard carries **no shared secret**: every API call sends the signed-in user's Privy session token, which the server verifies and scopes. The deployed dashboard origin must be listed in the server's `REMIT_CORS_ORIGINS`.
 
 ## Security model
 
 - **Custody**: your funds stay in your wallet. The per-card agent key signs redelegations only; it holds no assets and is encrypted at rest.
+- **Dashboard auth**: per-user Privy sessions, verified server-side against the app JWKS. At onboard, the embedded wallet signs `remit-onboard:v1:<did>` to prove key possession bound to that login; from then on, every card route is scoped to the authenticated user's own cards.
+- **Issuance integrity**: the server verifies the delegation signature recovers to the delegator on both issuance lanes before persisting a card.
 - **Card secrets**: 256-bit, stored hashed; the URL is a credential, rotate it like a password.
 - **Limits enforced twice**: server-side at call time (typed refusals) and on-chain by caveat enforcers at redemption.
 - **Revocation layers**: freeze (server, reversible) -> revoke (card + subtree, permanent) -> nuke (on-chain nonce bump, kills every delegation ever issued by the wallet).

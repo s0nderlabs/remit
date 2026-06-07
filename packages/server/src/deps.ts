@@ -5,14 +5,17 @@
 import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
 import { Relayer, Store, type DelegationSigner, type SpendDeps } from "@remit/engine";
+import { makePrivyVerifier, type PrivyVerifier } from "./api/privy";
 
 export type AppDeps = {
   store: Store;
   relayer: Relayer;
   /** dev-mode server-side signer for A_user (local key); P4 adds the pre-signed Privy path */
   userSigner: DelegationSigner | null;
-  /** dashboard API bearer token (single-user v1) */
+  /** ops bearer token (server-side curl/scripts lane; full access) */
   adminToken: string | null;
+  /** Privy session verifier (per-user dashboard lane); null = lane disabled */
+  verifyPrivyToken: PrivyVerifier | null;
   spendOverrides?: Partial<SpendDeps>;
 };
 
@@ -20,11 +23,13 @@ export function realDeps(): AppDeps {
   const store = new Store(); // REMIT_DB_PATH or :memory:
   const relayer = new Relayer();
   const pk = process.env.REMIT_DEV_USER_PK as Hex | undefined;
+  const privyAppId = process.env.REMIT_PRIVY_APP_ID;
   return {
     store,
     relayer,
     userSigner: pk ? privateKeyToAccount(pk) : null,
     adminToken: process.env.REMIT_ADMIN_TOKEN ?? null,
+    verifyPrivyToken: privyAppId ? makePrivyVerifier(privyAppId) : null,
   };
 }
 

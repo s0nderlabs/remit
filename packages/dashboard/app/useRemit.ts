@@ -21,6 +21,7 @@ import {
   useSign7702Authorization,
   type ConnectedWallet,
 } from "@privy-io/react-auth";
+import { stringToHex } from "viem";
 import type { Address, Hex } from "viem";
 import {
   getSmartAccountsEnvironment,
@@ -90,6 +91,24 @@ export function useRemit() {
     };
   }, [embeddedWallet, address, signAuthorization]);
 
+  // --- Onboard proof: personal_sign("remit-onboard:v1:<did>") with the embedded key.
+  // Proves to the server that THIS Privy login holds THIS wallet's key; the DID in
+  // the message makes the signature useless to any other login (no replay). ---
+  const signOnboardProof = useCallback(
+    async (did: string): Promise<Hex> => {
+      if (!embeddedWallet || !address) throw new Error("embedded wallet not ready");
+      const provider = await embeddedWallet.getEthereumProvider();
+      // MUST stay byte-for-byte in sync with onboardProofMessage() in
+      // packages/server/src/api/routes.ts (server recovers against the same string).
+      // personal_sign of stringToHex(s) and viem hashMessage(s) hash identical bytes.
+      return (await provider.request({
+        method: "personal_sign",
+        params: [stringToHex(`remit-onboard:v1:${did}`), address],
+      })) as Hex;
+    },
+    [embeddedWallet, address],
+  );
+
   // --- EIP-712 ERC-7710 root delegation (the card's authority grant) ---
   const signDelegation = useCallback(
     async (delegation: UnsignedDelegation): Promise<Hex> => {
@@ -157,6 +176,7 @@ export function useRemit() {
     /** true only when the wallet PROVIDER is initialized (signing before this throws) */
     embeddedReady: walletsReady && !!address,
     sign7702,
+    signOnboardProof,
     signDelegation,
   };
 }

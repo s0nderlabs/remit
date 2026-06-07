@@ -10,25 +10,42 @@ import { useRemit } from "./useRemit";
 
 export default function Home() {
   const remit = useRemit();
-  const { ready, authenticated, address, login, logout, sign7702, embeddedReady } = remit;
+  const { ready, authenticated, user, address, login, logout, sign7702, signOnboardProof, embeddedReady } = remit;
+  const did = user?.id;
 
   const [onboarded, setOnboarded] = useState(false);
   const [onboarding, setOnboarding] = useState(false);
   const [onboardErr, setOnboardErr] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
   const onboardingRef = useRef(false);
+  const prevDidRef = useRef<string | undefined>(undefined);
+
+  // Re-arm onboarding whenever the Privy identity changes (logout, or switching to a
+  // different account in the SAME tab — the Home component instance and its state
+  // persist across login transitions, so stale onboarded=true would otherwise gate the
+  // new DID out and every /api call would 403 in a loop). Runs before the onboard effect.
+  useEffect(() => {
+    if (prevDidRef.current !== undefined && prevDidRef.current !== did) {
+      setOnboarded(false);
+      setOnboardErr(null);
+      onboardingRef.current = false;
+    }
+    prevDidRef.current = did;
+  }, [did]);
 
   // Auto-onboard once the embedded wallet is ready: sign the 7702 authorization
-  // (silent, grants nothing) and register the wallet server-side. Runs once;
-  // retryNonce re-arms it after a failure.
+  // (silent, grants nothing) + the onboard proof (binds the wallet to this Privy
+  // login server-side) and register the wallet. Runs once; retryNonce re-arms it
+  // after a failure.
   useEffect(() => {
-    if (!authenticated || !address || !embeddedReady || onboarded || onboardingRef.current) return;
+    if (!authenticated || !address || !did || !embeddedReady || onboarded || onboardingRef.current) return;
     onboardingRef.current = true;
     setOnboarding(true);
     (async () => {
       try {
         const auth = await sign7702();
-        await api.onboard(address, auth);
+        const proof = await signOnboardProof(did);
+        await api.onboard(address, auth, proof);
         setOnboarded(true);
         setOnboardErr(null);
       } catch (e) {
@@ -38,7 +55,7 @@ export default function Home() {
         setOnboarding(false);
       }
     })();
-  }, [authenticated, address, embeddedReady, onboarded, sign7702, retryNonce]);
+  }, [authenticated, address, did, embeddedReady, onboarded, sign7702, signOnboardProof, retryNonce]);
 
   if (!ready) return <div className="mono">loading…</div>;
   if (!authenticated) return <Login onLogin={login} />;

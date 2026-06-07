@@ -69,6 +69,8 @@ export type UserRow = {
   address: Address;
   auth7702_json: string | null; // signed 7702 authorization, wire shape
   revocation_nonce: string; // decimal string of the user's current NonceEnforcer nonce
+  /** Privy DID (did:privy:...) bound to this wallet at onboard; null = never Privy-onboarded */
+  privy_did: string | null;
   created_at: number;
 };
 
@@ -169,22 +171,38 @@ export class Store {
     if (!cols.some((c) => c.name === "secret_enc")) {
       this.db.exec(`ALTER TABLE cards ADD COLUMN secret_enc BLOB`);
     }
+    // additive migration for DBs created before the Privy-session binding existed
+    const userCols = this.db.query(`PRAGMA table_info(users)`).all() as Array<{ name: string }>;
+    if (!userCols.some((c) => c.name === "privy_did")) {
+      this.db.exec(`ALTER TABLE users ADD COLUMN privy_did TEXT`);
+    }
+    this.db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy_did ON users(privy_did) WHERE privy_did IS NOT NULL`,
+    );
   }
 
   // ---- users ----
 
-  upsertUser(u: { id: string; address: Address; auth7702Json?: string | null }): void {
+  upsertUser(u: { id: string; address: Address; auth7702Json?: string | null; privyDid?: string | null }): void {
     this.db
       .query(
-        `INSERT INTO users (id, address, auth7702_json, created_at)
-         VALUES ($id, $address, $auth, unixepoch())
-         ON CONFLICT(id) DO UPDATE SET auth7702_json = COALESCE($auth, auth7702_json)`,
+        `INSERT INTO users (id, address, auth7702_json, privy_did, created_at)
+         VALUES ($id, $address, $auth, $did, unixepoch())
+         ON CONFLICT(id) DO UPDATE SET
+           auth7702_json = COALESCE($auth, auth7702_json),
+           privy_did = COALESCE($did, privy_did)`,
       )
-      .run({ $id: u.id, $address: u.address, $auth: u.auth7702Json ?? null });
+      .run({ $id: u.id, $address: u.address, $auth: u.auth7702Json ?? null, $did: u.privyDid ?? null });
   }
 
   getUser(id: string): UserRow | null {
     return (this.db.query(`SELECT * FROM users WHERE id = $id`).get({ $id: id }) as UserRow) ?? null;
+  }
+
+  getUserByPrivyDid(did: string): UserRow | null {
+    return (
+      (this.db.query(`SELECT * FROM users WHERE privy_did = $d`).get({ $d: did }) as UserRow) ?? null
+    );
   }
 
   getUserByAddress(address: Address): UserRow | null {

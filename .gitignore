@@ -23,3 +23,6 @@ PLAN.md
 # local dev state (secrets, sqlite)
 .dev/
 *.tsbuildinfo
+.vercel
+.env*.local
+*.local.ts

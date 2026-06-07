@@ -58,6 +58,7 @@ beforeAll(() => {
     relayer: relayer as unknown as Relayer,
     userSigner: user,
     adminToken: "test-admin",
+    verifyPrivyToken: null,
     spendOverrides: {
       codeCheck: async () => true,
       confirmViaChain: false,

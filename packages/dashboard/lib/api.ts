@@ -1,10 +1,12 @@
-// Dashboard API client. AUTH (dev): the admin token gates the API (single-user dev);
-// IDENTITY: the Privy embedded wallet address is the userId (one user row per wallet),
-// and issuance is CLIENT-signed (onboard -> prepare -> sign in browser -> finalize).
-// Production would verify a Privy session server-side instead of the shared admin token.
+// Dashboard API client. AUTH: every call carries the user's Privy access token; the
+// server verifies it against the app JWKS and scopes every route to the authenticated
+// user (no shared admin token in the browser, ever). IDENTITY: the Privy embedded
+// wallet address is the userId (one user row per wallet, bound to the Privy DID at
+// onboard), and issuance is CLIENT-signed (onboard -> prepare -> sign -> finalize).
+
+import { getAccessToken } from "@privy-io/react-auth";
 
 const BASE = process.env.NEXT_PUBLIC_REMIT_API ?? "http://localhost:4070/api";
-const TOKEN = process.env.NEXT_PUBLIC_REMIT_ADMIN_TOKEN ?? "";
 
 type Hex = `0x${string}`;
 type Wire7702Auth = { chainId: Hex; address: Hex; nonce: Hex; yParity: Hex; r: Hex; s: Hex };
@@ -18,17 +20,21 @@ type WireDelegation = {
 };
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = await getAccessToken(); // refreshes if near expiry; null when logged out
+  if (!token) throw new Error("not signed in");
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
-      authorization: `Bearer ${TOKEN}`,
+      authorization: `Bearer ${token}`,
       "content-type": "application/json",
       ...init?.headers,
     },
     cache: "no-store",
   });
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.message ?? body.error ?? `http ${res.status}`);
+  // a non-JSON error body (edge/proxy HTML on 502/503) must not surface as a raw
+  // SyntaxError — fall back to the status line.
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.message ?? body?.error ?? `http ${res.status}`);
   return body as T;
 }
 
@@ -72,10 +78,11 @@ export type Charge = {
 
 export const api = {
   // --- Privy lane: onboard + client-signed issuance ---
-  onboard: (address: string, auth7702: Wire7702Auth) =>
+  // proof = personal_sign("remit-onboard:v1:<did>") — binds the wallet to THIS login
+  onboard: (address: string, auth7702: Wire7702Auth, proof: Hex) =>
     call<{ user_id: string; address: string; revocation_nonce: string; has_auth7702: boolean }>("/onboard", {
       method: "POST",
-      body: JSON.stringify({ address, auth7702 }),
+      body: JSON.stringify({ address, auth7702, proof }),
     }),
   prepareCard: (name: string, terms: CardTermsInput, userAddress: string) =>
     call<{ prepare_id: string; chain_id: number; k_agent_address: string; delegation: WireDelegation }>("/cards/prepare", {

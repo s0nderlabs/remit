@@ -1,13 +1,21 @@
-// Dashboard REST API (P4's backend). Single-user v1: Bearer REMIT_ADMIN_TOKEN.
+// Dashboard REST API. Two auth lanes on every /api route:
+//   - ADMIN (ops): Bearer REMIT_ADMIN_TOKEN — full access, server-side curl/scripts.
+//   - PRIVY (dashboard): Bearer <Privy access token>, verified offline against the
+//     app JWKS. Every read/control is scoped to the cards of the AUTHENTICATED user.
+//     The wallet<->login binding is PROVEN at onboard: the embedded wallet signs
+//     "remit-onboard:v1:<did>" (personal_sign), so a Privy login can only ever claim
+//     an address whose key it holds — and the DID inside the message kills replay.
 // Two issuance lanes:
-//   - DEV (server-signed): POST /cards signs the root with the local A_user key.
+//   - DEV (server-signed): POST /cards signs the root with the local A_user key (admin only).
 //   - PRIVY (client-signed): POST /onboard stores the embedded wallet's 7702 auth;
 //     POST /cards/prepare returns an UNSIGNED root delegation the browser signs;
 //     POST /cards/finalize takes that signature and persists the card. The server
 //     never holds A_user's key in the Privy lane. K_agent stays server-side.
 
+import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import type { Context, Next } from "hono";
+import { isAddressEqual, recoverMessageAddress } from "viem";
 import type { Address, Hex } from "viem";
 import {
   EngineError,
@@ -23,12 +31,15 @@ import {
   readRevocationNonce,
   rotateCardSecret,
   viewCardSecret,
+  type CardRow,
   type CardTerms,
   type PreparedRootCard,
+  type UserRow,
   type Wire7702Auth,
 } from "@remit/engine";
 import type { AppDeps } from "../deps";
 import { cardUrl } from "../mcp/server";
+import { onboardProofMessage } from "./privy";
 
 /** Privy-lane user id convention: the embedded (A_user) address, lowercased. One
  * user row per embedded wallet. */
@@ -38,8 +49,17 @@ const privyUserId = (address: string): string => address.toLowerCase();
  * non-address ids (e.g. "elpabl0-dev") pass through. */
 const normUserId = (s: string): string => (/^0x[0-9a-fA-F]{40}$/.test(s) ? s.toLowerCase() : s);
 
-export function apiRoutes(deps: AppDeps): Hono {
-  const app = new Hono();
+/** Constant-time bearer compare (hash both sides so length differences don't leak). */
+const tokenEqual = (a: string, b: string): boolean =>
+  timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
+
+type AuthCtx = { kind: "admin" } | { kind: "privy"; did: string };
+
+/** Auth/scoping failure: a 403, distinct from engine refusals (422). */
+class ForbiddenError extends Error {}
+
+export function apiRoutes(deps: AppDeps): Hono<{ Variables: { auth: AuthCtx } }> {
+  const app = new Hono<{ Variables: { auth: AuthCtx } }>();
   const now = () => Math.floor(Date.now() / 1000);
 
   // Prepared (unsigned) cards awaiting the browser's signature. In-memory, single
@@ -51,22 +71,65 @@ export function apiRoutes(deps: AppDeps): Hono {
     for (const [k, v] of pending) if (v.expires < t) pending.delete(k);
   };
 
-  // ---- auth ----
-  app.use("*", async (c: Context, next: Next) => {
-    if (!deps.adminToken) return c.json({ error: "api disabled (no REMIT_ADMIN_TOKEN)" }, 503);
-    const m = c.req.header("authorization")?.match(/^Bearer\s+(.+)$/i);
-    if (m?.[1] !== deps.adminToken) return c.json({ error: "unauthorized" }, 401);
-    await next();
+  // ---- auth: admin token (ops) OR verified Privy session (dashboard) ----
+  app.use("*", async (c: Context<{ Variables: { auth: AuthCtx } }>, next: Next) => {
+    if (!deps.adminToken && !deps.verifyPrivyToken) {
+      return c.json({ error: "api disabled (no REMIT_ADMIN_TOKEN and no REMIT_PRIVY_APP_ID)" }, 503);
+    }
+    const token = c.req.header("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
+    if (token) {
+      if (deps.adminToken && tokenEqual(token, deps.adminToken)) {
+        c.set("auth", { kind: "admin" });
+        return next();
+      }
+      if (deps.verifyPrivyToken) {
+        const verified = await deps.verifyPrivyToken(token);
+        if (verified) {
+          c.set("auth", { kind: "privy", did: verified.did });
+          return next();
+        }
+      }
+    }
+    return c.json({ error: "unauthorized" }, 401);
   });
 
-  const handle = async (c: Context, fn: () => Promise<unknown>) => {
+  const handle = async (c: Context<{ Variables: { auth: AuthCtx } }>, fn: () => Promise<unknown>) => {
     try {
       return c.json((await fn()) as never);
     } catch (e) {
+      if (e instanceof ForbiddenError) return c.json({ error: e.message }, 403);
       if (e instanceof RefusalError) return c.json(e.toJSON(), 422);
       if (e instanceof EngineError) return c.json({ status: "error", stage: e.stage, message: e.message }, 502);
       return c.json({ status: "error", message: e instanceof Error ? e.message : String(e) }, 500);
     }
+  };
+
+  // ---- scoping helpers ----
+
+  /** The onboarded user bound to the authenticated Privy DID (privy lane only). */
+  const boundUser = (c: Context<{ Variables: { auth: AuthCtx } }>): UserRow => {
+    const auth = c.get("auth");
+    if (auth.kind !== "privy") throw new ForbiddenError("privy session required");
+    const user = deps.store.getUserByPrivyDid(auth.did);
+    if (!user) throw new ForbiddenError("not onboarded — sign in on the dashboard first");
+    return user;
+  };
+
+  /** The userId this request may act for: admin picks (query/body), privy is pinned. */
+  const scopedUserId = (c: Context<{ Variables: { auth: AuthCtx } }>, requested?: string): string =>
+    c.get("auth").kind === "admin" ? normUserId(requested ?? "elpabl0-dev") : boundUser(c).id;
+
+  /** Card lookup that refuses to reveal other users' cards (same shape as not-found). */
+  const ownedCard = (c: Context<{ Variables: { auth: AuthCtx } }>, id: string): CardRow => {
+    const card = deps.store.getCard(id);
+    if (!card || (c.get("auth").kind === "privy" && card.user_id !== boundUser(c).id)) {
+      throw new RefusalError("card_not_found", "no such card");
+    }
+    return card;
+  };
+
+  const adminOnly = (c: Context<{ Variables: { auth: AuthCtx } }>): void => {
+    if (c.get("auth").kind !== "admin") throw new ForbiddenError("admin token required");
   };
 
   // ---- Privy lane: onboarding + client-signed issuance ----
@@ -74,11 +137,39 @@ export function apiRoutes(deps: AppDeps): Hono {
   // Onboard: the browser has just created the embedded wallet (A_user) and signed
   // its EIP-7702 authorization. Store the user + the auth (spend/ops consume it as
   // authorizationList until A_user's 7702 code lands) + the current revocation nonce.
+  // In the privy lane the request must also carry the onboard PROOF (personal_sign
+  // over "remit-onboard:v1:<did>"): possession of the key, bound to THIS login.
   app.post("/onboard", (c) =>
     handle(c, async () => {
-      const body = (await c.req.json()) as { address?: Address; auth7702?: Wire7702Auth };
+      const body = (await c.req.json()) as { address?: Address; auth7702?: Wire7702Auth; proof?: Hex };
       if (!body.address) throw new RefusalError("invalid_terms", "address required");
       const userId = privyUserId(body.address);
+      const auth = c.get("auth");
+
+      let privyDid: string | undefined;
+      if (auth.kind === "privy") {
+        if (!body.proof) throw new RefusalError("invalid_terms", "onboard proof signature required");
+        let signer: Address;
+        try {
+          signer = await recoverMessageAddress({ message: onboardProofMessage(auth.did), signature: body.proof });
+        } catch {
+          throw new RefusalError("invalid_terms", "onboard proof is not a valid signature");
+        }
+        if (!isAddressEqual(signer, body.address)) {
+          throw new RefusalError("invalid_terms", "onboard proof does not recover to the wallet address");
+        }
+        // binding conflicts (belt and suspenders — the proof already makes cross-claims unforgeable)
+        const byDid = deps.store.getUserByPrivyDid(auth.did);
+        if (byDid && byDid.id !== userId) {
+          throw new ForbiddenError("this login is already bound to a different wallet");
+        }
+        const existing = deps.store.getUser(userId);
+        if (existing?.privy_did && existing.privy_did !== auth.did) {
+          throw new ForbiddenError("this wallet is already bound to a different login");
+        }
+        privyDid = auth.did;
+      }
+
       let nonce = 0n;
       try {
         nonce = await readRevocationNonce(body.address);
@@ -89,6 +180,7 @@ export function apiRoutes(deps: AppDeps): Hono {
         id: userId,
         address: body.address,
         auth7702Json: body.auth7702 ? JSON.stringify(body.auth7702) : null,
+        privyDid,
       });
       deps.store.setRevocationNonce(userId, nonce);
       return {
@@ -101,18 +193,25 @@ export function apiRoutes(deps: AppDeps): Hono {
   );
 
   // Prepare: compile caveats, mint K_agent, return the UNSIGNED root delegation for
-  // the browser to sign. Nothing is persisted until finalize.
+  // the browser to sign. Nothing is persisted until finalize. Privy callers are
+  // pinned to their own onboarded wallet; admin supplies userAddress explicitly.
   app.post("/cards/prepare", (c) =>
     handle(c, async () => {
       gcPending();
       const body = (await c.req.json()) as { name: string; terms: CardTerms; userAddress?: Address };
-      if (!body.userAddress) throw new RefusalError("invalid_terms", "userAddress required (onboard first)");
-      const userId = privyUserId(body.userAddress);
+      let userAddress: Address;
+      if (c.get("auth").kind === "privy") {
+        userAddress = boundUser(c).address;
+      } else {
+        if (!body.userAddress) throw new RefusalError("invalid_terms", "userAddress required (onboard first)");
+        userAddress = body.userAddress;
+      }
+      const userId = privyUserId(userAddress);
       if (!deps.store.getUser(userId)) {
         throw new RefusalError("invalid_terms", "user not onboarded — call /onboard first");
       }
       const prepared = await prepareRootCard(
-        { store: deps.store, userAddress: body.userAddress },
+        { store: deps.store, userAddress },
         { userId, name: body.name, terms: body.terms },
       );
       pending.set(prepared.prepareId, { prepared, expires: Date.now() + PENDING_TTL_MS });
@@ -126,7 +225,8 @@ export function apiRoutes(deps: AppDeps): Hono {
     }),
   );
 
-  // Finalize: attach the browser's EIP-712 signature and persist the card.
+  // Finalize: attach the browser's EIP-712 signature and persist the card. A privy
+  // caller can only finalize their OWN prepare (foreign ids look nonexistent).
   app.post("/cards/finalize", (c) =>
     handle(c, async () => {
       const body = (await c.req.json()) as { prepare_id?: string; signature?: Hex };
@@ -134,7 +234,9 @@ export function apiRoutes(deps: AppDeps): Hono {
         throw new RefusalError("invalid_terms", "prepare_id and signature required");
       }
       const entry = pending.get(body.prepare_id);
-      if (!entry) throw new RefusalError("invalid_terms", "unknown or expired prepare_id");
+      if (!entry || (c.get("auth").kind === "privy" && entry.prepared.userId !== boundUser(c).id)) {
+        throw new RefusalError("invalid_terms", "unknown or expired prepare_id");
+      }
       const issued = await finalizeRootCard({ store: deps.store }, entry.prepared, body.signature);
       // consume only on SUCCESS: a signature that fails recovery can be retried with a
       // corrected one until the TTL expires (the DB primary key backstops any replay)
@@ -146,6 +248,7 @@ export function apiRoutes(deps: AppDeps): Hono {
   // ---- cards ----
   app.post("/cards", (c) =>
     handle(c, async () => {
+      adminOnly(c); // server-signed dev lane: signs with the SERVER key, never user-facing
       if (!deps.userSigner) throw new EngineError("api", "no dev signer configured (REMIT_DEV_USER_PK)");
       const body = (await c.req.json()) as { name: string; terms: CardTerms; userId?: string };
       const userId = normUserId(body.userId ?? "elpabl0-dev");
@@ -160,7 +263,7 @@ export function apiRoutes(deps: AppDeps): Hono {
 
   app.get("/cards", (c) =>
     handle(c, async () => {
-      const userId = normUserId(c.req.query("userId") ?? "elpabl0-dev");
+      const userId = scopedUserId(c, c.req.query("userId"));
       return deps.store.listCards(userId).map((card) => ({
         ...cardState(deps.store, card.id, now()),
         parent_card_id: card.parent_card_id,
@@ -171,11 +274,10 @@ export function apiRoutes(deps: AppDeps): Hono {
 
   app.get("/cards/:id", (c) =>
     handle(c, async () => {
-      const id = c.req.param("id");
-      const state = cardState(deps.store, id, now());
+      const card = ownedCard(c, c.req.param("id"));
+      const state = cardState(deps.store, card.id, now());
       if (!state) throw new RefusalError("card_not_found", "no such card");
-      const card = deps.store.getCard(id)!;
-      const charges = deps.store.listCharges(id, 50);
+      const charges = deps.store.listCharges(card.id, 50);
       return {
         ...state,
         parent_card_id: card.parent_card_id,
@@ -197,7 +299,8 @@ export function apiRoutes(deps: AppDeps): Hono {
 
   app.get("/cards/:id/url", (c) =>
     handle(c, async () => {
-      const secret = await viewCardSecret(deps.store, c.req.param("id"));
+      const card = ownedCard(c, c.req.param("id"));
+      const secret = await viewCardSecret(deps.store, card.id);
       if (!secret) throw new RefusalError("card_not_found", "no secret on file for this card");
       return { card_url: cardUrl(secret) };
     }),
@@ -205,31 +308,36 @@ export function apiRoutes(deps: AppDeps): Hono {
 
   app.post("/cards/:id/rotate", (c) =>
     handle(c, async () => {
-      const secret = await rotateCardSecret(deps.store, c.req.param("id"));
+      const card = ownedCard(c, c.req.param("id"));
+      const secret = await rotateCardSecret(deps.store, card.id);
       return { card_url: cardUrl(secret) };
     }),
   );
 
   app.post("/cards/:id/freeze", (c) =>
     handle(c, async () => {
-      freezeCard(deps.store, c.req.param("id"));
+      freezeCard(deps.store, ownedCard(c, c.req.param("id")).id);
       return { status: "frozen" };
     }),
   );
 
   app.post("/cards/:id/unfreeze", (c) =>
     handle(c, async () => {
-      unfreezeCard(deps.store, c.req.param("id"));
+      unfreezeCard(deps.store, ownedCard(c, c.req.param("id")).id);
       return { status: "active" };
     }),
   );
 
   app.post("/cards/:id/revoke", (c) =>
     handle(c, async () => {
+      // server-signed (deps.userSigner = the dev key), like /cards and /nuke: admin-only.
+      // The privy lane revokes client-side (signed by the user's own A_user) — wired separately.
+      adminOnly(c);
+      const card = ownedCard(c, c.req.param("id"));
       if (!deps.userSigner) throw new EngineError("api", "no dev signer configured");
       const result = await revokeCard(
         { store: deps.store, relayer: deps.relayer, userSigner: deps.userSigner },
-        c.req.param("id"),
+        card.id,
       );
       return { status: "revoked", tx: result.txHash };
     }),
@@ -237,6 +345,7 @@ export function apiRoutes(deps: AppDeps): Hono {
 
   app.post("/nuke", (c) =>
     handle(c, async () => {
+      adminOnly(c); // server-signed; the privy lane gets a client-signed nuke (wired separately)
       if (!deps.userSigner) throw new EngineError("api", "no dev signer configured");
       const body = (await c.req.json().catch(() => ({}))) as { userId?: string };
       const result = await nukeAll(
@@ -250,7 +359,7 @@ export function apiRoutes(deps: AppDeps): Hono {
   // ---- tree (the demo view's data) ----
   app.get("/tree", (c) =>
     handle(c, async () => {
-      const userId = normUserId(c.req.query("userId") ?? "elpabl0-dev");
+      const userId = scopedUserId(c, c.req.query("userId"));
       const cards = deps.store.listCards(userId);
       type Node = { card: ReturnType<typeof cardState>; children: Node[] };
       const byParent = new Map<string | null, typeof cards>();

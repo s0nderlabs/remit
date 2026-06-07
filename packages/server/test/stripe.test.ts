@@ -26,6 +26,7 @@ beforeAll(async () => {
     relayer: {} as Relayer, // webhook path never touches the relayer (2s rule)
     userSigner: user,
     adminToken: null,
+    verifyPrivyToken: null,
   };
   server = Bun.serve({ port: 0, fetch: createApp(deps).fetch });
   base = `http://localhost:${server.port}`;
