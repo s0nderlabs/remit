@@ -10,6 +10,8 @@ import {
   orArgs,
   attenuate,
   feeSafeContractScope,
+  declaredContractScope,
+  canonicalSelector,
   payLeafScope,
   contractLeafScope,
 } from "../src/compiler";
@@ -138,6 +140,46 @@ describe("leaf scopes", () => {
     expect(s.targets.map(lc)).toContain(lc(USDC));
     expect(s.selectors).toContain("transfer(address,uint256)");
   });
+  test("declaredContractScope does NOT union USDC/transfer (no scope-escape)", () => {
+    const s = declaredContractScope({ targets: [SWAP_ROUTER_02], selectors: ["approve(address,uint256)"] });
+    expect(s.targets.map(lc)).not.toContain(lc(USDC)); // the fee-leg pair is invisible to the agent
+    expect(s.selectors).not.toContain("transfer(address,uint256)");
+    expect(s.targets.map(lc)).toEqual([lc(SWAP_ROUTER_02)]);
+    expect(s.selectors).toEqual(["approve(address,uint256)"]);
+  });
+});
+
+describe("selector canonicalization", () => {
+  test("canonicalSelector normalizes aliases + whitespace", () => {
+    expect(canonicalSelector("withdraw(uint)")).toBe("withdraw(uint256)");
+    expect(canonicalSelector("approve(address, uint256)")).toBe("approve(address,uint256)");
+    expect(canonicalSelector("exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))")).toBe(
+      "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))",
+    );
+  });
+  test("compileCard stores canonical selectors (uint -> uint256)", () => {
+    const c = compileCard({ contract: { targets: [SWAP_ROUTER_02], selectors: ["withdraw(uint)", "approve(address, uint256)"] } }, OPTS);
+    expect(c.terms.contract!.selectors).toEqual(["withdraw(uint256)", "approve(address,uint256)"]);
+  });
+  test("attenuate accepts an aliased child selector as a subset match", () => {
+    const parent: CardTerms = { contract: { targets: [SWAP_ROUTER_02], selectors: ["withdraw(uint256)"] } };
+    const child: CardTerms = { contract: { targets: [SWAP_ROUTER_02], selectors: ["withdraw(uint)"] } };
+    const out = attenuate(parent, {}, child, NOW); // should NOT throw exceeds_parent_terms
+    expect(out.contract!.selectors).toEqual(["withdraw(uint256)"]);
+  });
+});
+
+describe("maxUses: on-chain limit scaled to executions (per-execution enforcer)", () => {
+  // The LimitedCallsEnforcer counts executions, not redemptions, and every redemption
+  // appends a fee-leg execution (+ up to 5 work calls). Scale the on-chain limit so it
+  // never falsely blocks a redemption the server-side maxUses cap allows. limit = N*6.
+  test("limitedCalls caveat encodes maxUses * 6", () => {
+    const c2 = compileCard({ contract: { targets: [SWAP_ROUTER_02], selectors: ["approve(address,uint256)"] }, maxUses: 2 }, OPTS);
+    expect(c2.rootCaveats.some((cv) => BigInt(cv.terms) === 12n)).toBe(true); // 2 * 6
+    const c1 = compileCard({ contract: { targets: [SWAP_ROUTER_02], selectors: ["approve(address,uint256)"] }, maxUses: 1 }, OPTS);
+    expect(c1.rootCaveats.some((cv) => BigInt(cv.terms) === 6n)).toBe(true); // 1 * 6, NOT 1
+    expect(c1.rootCaveats.some((cv) => BigInt(cv.terms) === 1n)).toBe(false);
+  });
 });
 
 describe("validateTerms refusals", () => {
@@ -156,6 +198,12 @@ describe("validateTerms refusals", () => {
   test("past expiry", () => bad({ pay: { lifetime: { amount: "1" } }, expiry: NOW - 1 }));
   test("bad merchant address", () => bad({ pay: { lifetime: { amount: "1" } }, merchants: ["0xnope" as Address] }));
   test("bad selector", () => bad({ contract: { targets: [SWAP_ROUTER_02], selectors: ["not a sig"] } }));
+  // unparseable-but-regex-valid selectors must be rejected (else a phantom on-chain
+  // selector gets stored that no real call matches).
+  test("unparseable selector (passes regex, fails ABI parser)", () =>
+    bad({ contract: { targets: [SWAP_ROUTER_02], selectors: ["withdraw(UINT)"] } }));
+  test("unparseable selector with a bogus type", () =>
+    bad({ contract: { targets: [SWAP_ROUTER_02], selectors: ["foo(bar)"] } }));
 });
 
 describe("attenuate (sub-cards)", () => {

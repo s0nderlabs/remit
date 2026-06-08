@@ -10,7 +10,7 @@
 // Merchant pins NEVER compile into the root (Phase-B live: they collide with the
 // mandatory fee leg) -> carve-layer policy.
 
-import { pad, toHex, type Address, type Hex } from "viem";
+import { pad, parseAbiItem, toFunctionSignature, toHex, type Address, type Hex } from "viem";
 import { getSmartAccountsEnvironment, ScopeType, createCaveat } from "@metamask/smart-accounts-kit";
 import { createCaveatBuilder } from "@metamask/smart-accounts-kit/utils";
 import {
@@ -36,6 +36,18 @@ const SELECTOR_RE = /^[a-zA-Z_]\w*\(.*\)$/;
 // Backdate period startDate so ERC20PeriodTransferEnforcer never sees a future start
 // (reverts transfer-not-started if startDate > block.timestamp).
 const START_DATE_BACKDATE_S = 300;
+
+// The on-chain LimitedCallsEnforcer counts per EXECUTION, but maxUses is a REDEMPTION
+// count (the server enforces it that way via subtreeUsesCount). Every redemption appends
+// a fee-leg execution, and a contract `execute` may batch up to 5 work calls, so one
+// redemption is up to 6 executions. LIVE-CONFIRMED Jun 8 2026 on Base mainnet: a
+// maxUses:3 card died on-chain after one 3-execution swap (old limit=maxUses), and a
+// maxUses:1 card ran a 2-call (3-execution) redemption once the limit was scaled
+// (tx 0xb037f7d7). We scale the on-chain limit by the worst case so the chain never
+// falsely pre-empts a redemption the server-side maxUses cap would allow; the server
+// remains the binding, redemption-accurate limit. (5 = execute tool's calls.max(5);
+// +1 = USDC fee leg. Pay/x402-only redemptions are just 2 executions, so they scale by 2.)
+const MAX_EXECUTIONS_PER_REDEMPTION = 6;
 
 export type CompileOpts = {
   chainId?: ChainId;
@@ -83,7 +95,22 @@ export function validateTerms(terms: CardTerms, now: number): void {
     if (!targets?.length) invalid("contract scope needs at least one target", "contract.targets");
     if (!selectors?.length) invalid("contract scope needs at least one selector", "contract.selectors");
     for (const t of targets) if (!ADDRESS_RE.test(t)) invalid(`bad target address: ${t}`, "contract.targets");
-    for (const s of selectors) if (!SELECTOR_RE.test(s)) invalid(`bad method signature: ${s}`, "contract.selectors");
+    for (const s of selectors) {
+      if (!SELECTOR_RE.test(s)) invalid(`bad method signature: ${s}`, "contract.selectors");
+      // SELECTOR_RE is looser than the ABI parser; reject signatures the parser can't
+      // read (e.g. "withdraw(UINT)") rather than silently storing a phantom on-chain
+      // selector that no real call matches.
+      try {
+        parseAbiItem(`function ${s}`);
+      } catch {
+        invalid(`unparseable method signature: ${s}`, "contract.selectors");
+      }
+    }
+    // Normalize to canonical signatures (all parse now) so encode, raw-data check, and
+    // on-chain allowedMethods agree (uint -> uint256, whitespace stripped). NOTE: this
+    // mutates terms.contract in place; callers pass single-use request bodies and the
+    // store re-deserializes per read, so aliasing is safe (double-canonicalize is a no-op).
+    terms.contract.selectors = selectors.map(canonicalSelector);
   }
   if (terms.expiry !== undefined) {
     if (!Number.isInteger(terms.expiry) || terms.expiry <= now) invalid("expiry must be in the future", "expiry");
@@ -155,7 +182,12 @@ function baseCaveats(terms: CardTerms, opts: CompileOpts, chainId: ChainId): Wir
     b = b.addCaveat("timestamp", { afterThreshold: 0, beforeThreshold: terms.expiry });
   }
   if (terms.maxUses !== undefined) {
-    b = b.addCaveat("limitedCalls", { limit: terms.maxUses });
+    // limit is in EXECUTIONS (per-execution enforcer); maxUses is in REDEMPTIONS. Scale
+    // by the worst-case executions/redemption so the chain backstops without falsely
+    // blocking a redemption the server-side maxUses (subtreeUsesCount) already allows.
+    // pay/x402-only = 2 exec (work + fee); contract/composite can batch up to 6.
+    const execsPerRedemption = terms.contract ? MAX_EXECUTIONS_PER_REDEMPTION : 2;
+    b = b.addCaveat("limitedCalls", { limit: terms.maxUses * execsPerRedemption });
   }
   b = b.addCaveat("nonce", { nonce: pad(toHex(opts.revocationNonce), { size: 32 }) });
   return b.build() as WireCaveat[];
@@ -267,6 +299,29 @@ export function contractLeafScope(terms: ContractTerms, chainId: ChainId = CHAIN
   } as const;
 }
 
+/** The scope the USER declared, for VALIDATING agent-requested calls. Unlike
+ * contractLeafScope this does NOT union in the fee leg's USDC + transfer(): the agent
+ * must never be able to call USDC.transfer just because the fee mechanism needs that
+ * pair authorized on-chain. Tool/engine validation uses this; the on-chain leaf and
+ * root caveats use the fee-safe scope so the appended fee leg still passes. */
+export function declaredContractScope(terms: ContractTerms) {
+  return { targets: terms.targets, selectors: terms.selectors };
+}
+
+/** Canonical function signature (uint -> uint256, whitespace stripped) so the
+ * method-encode path, the raw-data 4-byte selector check, and the on-chain
+ * allowedMethods enforcer all key off the same selector. Falls back to the input
+ * when it can't be parsed (validateTerms already rejects non-signatures). */
+export function canonicalSelector(sig: string): string {
+  try {
+    // parseAbiItem canonicalizes (uint -> uint256, whitespace stripped); the "function "
+    // prefix guarantees an AbiFunction at runtime, so the union-narrowing cast is safe.
+    return toFunctionSignature(parseAbiItem(`function ${sig}`) as never);
+  } catch {
+    return sig;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Sub-card attenuation (exceeds_parent_terms; chain enforces anyway)
 // ---------------------------------------------------------------------------
@@ -330,12 +385,12 @@ export function attenuate(parent: CardTerms, remaining: ParentRemaining, child: 
   if (out.contract) {
     if (!parent.contract) exceeds("contract", "parent card has no contract capability");
     const pTargets = new Set(parent.contract.targets.map((t) => t.toLowerCase()));
-    const pSelectors = new Set(parent.contract.selectors);
+    const pSelectors = new Set(parent.contract.selectors.map(canonicalSelector));
     for (const t of out.contract.targets) {
       if (!pTargets.has(t.toLowerCase())) exceeds("contract.targets", `target ${t} not in parent scope`);
     }
     for (const s of out.contract.selectors) {
-      if (!pSelectors.has(s)) exceeds("contract.selectors", `selector ${s} not in parent scope`);
+      if (!pSelectors.has(canonicalSelector(s))) exceeds("contract.selectors", `selector ${s} not in parent scope`);
     }
   }
 

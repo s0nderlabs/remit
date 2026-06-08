@@ -5,9 +5,9 @@
 // every ancestor checked) so agents get a clean refusal instead of a revert. The chain
 // remains the backstop: anything the server gets wrong still reverts on-chain.
 
-import type { Address, Hex } from "viem";
+import { toFunctionSelector, type Address, type Hex } from "viem";
 import { CHAIN_ID, CHAINS, FEE_COLLECTOR, publicClient, type ChainId } from "./chains";
-import { applyOrArgs, contractLeafScope, payLeafScope } from "./compiler";
+import { applyOrArgs, canonicalSelector, contractLeafScope, declaredContractScope, payLeafScope } from "./compiler";
 import { withAgentAccount } from "./custody";
 import {
   carveLeafDelegation,
@@ -164,14 +164,38 @@ export function validateSpend(
     if (!execs.length) throw new RefusalError("invalid_terms", "execute requires at least one call");
     for (const c of chain) {
       if (!c.terms.contract) continue; // pay-only ancestors govern via OR groups / caps on-chain
-      const scope = contractLeafScope(c.terms.contract, deps.chainId ?? CHAIN_ID);
-      const allowedTargets = new Set(scope.targets.map((t) => t.toLowerCase()));
+      // Validate against the DECLARED scope, not the fee-safe one: a card scoped to
+      // (say) Uniswap must NOT also permit USDC.transfer just because the fee leg unions
+      // those in on-chain. Every ancestor's declared scope must allow every target AND
+      // selector (engine-level gate, mirroring the MCP tool's encodeScopedCall check, so
+      // any future non-MCP caller that hand-builds workExecutions can't bypass it).
+      const declared = declaredContractScope(c.terms.contract);
+      const allowedTargets = new Set(declared.targets.map((t) => t.toLowerCase()));
+      const allowedSelectors = new Set(
+        declared.selectors.flatMap((s) => {
+          try {
+            return [toFunctionSelector(canonicalSelector(s)).toLowerCase()];
+          } catch {
+            return []; // a malformed legacy/stored selector matches no real calldata; skip it
+          }
+        }),
+      );
       for (const e of execs) {
         if (!allowedTargets.has(e.target.toLowerCase())) {
           throw new RefusalError("target_not_allowed", `target ${e.target} is outside the card's contract scope`, {
             card_id: c.id,
             target: e.target,
           });
+        }
+        const selector = (e.data ?? "0x").slice(0, 10).toLowerCase();
+        if (!allowedSelectors.has(selector)) {
+          throw new RefusalError("method_not_allowed", `selector ${selector} is outside the card's contract scope`, {
+            card_id: c.id,
+            selector,
+          });
+        }
+        if (e.value && e.value !== "0") {
+          throw new RefusalError("invalid_terms", "native value is not supported on contract cards");
         }
       }
     }

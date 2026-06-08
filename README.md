@@ -37,17 +37,20 @@ The agent never sees a private key, never holds a balance, never needs ETH. The 
 
 ## What an agent can do with a card
 
-Five MCP tools, served over Streamable HTTP:
+MCP tools, served over Streamable HTTP. The exact set a card exposes matches its capabilities, so the tool list itself is the permission surface (a pay-only card never sees `execute`; a contract-only card never sees `pay`):
 
 | Tool | Purpose |
 |---|---|
 | `card` | Live state: remaining budget, terms, expiry, recent charges, sub-cards |
 | `pay` | Send USDC on Base within the card's limits; blocks until confirmed on-chain |
 | `paid_fetch` | Fetch a URL; on HTTP 402 (x402), pay automatically and return the content |
-| `issue_subcard` | Mint a tighter child card for a sub-agent; terms must nest inside the parent's |
+| `execute` | Run scoped contract calls (e.g. approve + swap, stake, mint) atomically in one redemption; only on cards with contract scope |
+| `issue_subcard` | Mint a tighter child card for a sub-agent; pay caps and contract scope must both nest inside the parent's |
 | `revoke_subcard` | Instantly kill a sub-card (and its descendants) |
 
-Refusals are typed (`over_period_limit`, `merchant_not_allowed`, `price_exceeds_max`, `exceeds_parent_terms`, ...) so agents can relay them honestly instead of guessing.
+Refusals are typed (`over_period_limit`, `merchant_not_allowed`, `price_exceeds_max`, `exceeds_parent_terms`, `target_not_allowed`, `method_not_allowed`, ...) so agents can relay them honestly instead of guessing.
+
+**Contract cards.** A card can be scoped to specific contract targets + method selectors instead of (or alongside) a USDC budget. The agent calls `execute` with either `{target, method, args}` (the server ABI-encodes) or `{target, data}` raw calldata for tuple/array/multicall methods like Uniswap `exactInputSingle`. Targets and selectors outside the card's declared scope are refused before anything reaches the chain, and the on-chain `allowedTargets`/`allowedMethods` enforcers check the same scope again. Method signatures are normalized to their canonical form (`uint` -> `uint256`) so the encoder, the raw-data selector check, and the on-chain enforcer all agree. Safety on contract cards is the target/method allowlist plus `maxUses` and `expiry` (contract calls are not USDC-metered); pair contract scope with a `pay` cap in one composite card when you want both. Calls carry no native ETH value in v1 (the carved leaf caps value at 0 on-chain); payable-with-value is a planned extension.
 
 ## Connecting a card to an agent
 

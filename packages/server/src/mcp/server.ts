@@ -7,7 +7,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { encodeFunctionData, parseAbi, type Address } from "viem";
+import { encodeFunctionData, parseAbi, toFunctionSelector, type Address, type Hex } from "viem";
 import {
   decodePaymentRequiredHeader,
   decodePaymentResponseHeader,
@@ -19,8 +19,9 @@ import {
   agentRevokeSubcard,
   atomsToUsdc,
   buildX402Payload,
+  canonicalSelector,
   cardState,
-  contractLeafScope,
+  declaredContractScope,
   finalizeX402Charge,
   issueSubCard,
   parseAtoms,
@@ -36,7 +37,7 @@ import {
 import type { AppDeps } from "../deps";
 import { spendDeps, spendKey } from "../deps";
 
-const SERVER_INFO = { name: "remit", version: "0.4.0" };
+const SERVER_INFO = { name: "remit", version: "0.5.0" };
 
 // ---------------------------------------------------------------------------
 // Result helpers
@@ -269,14 +270,22 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
       {
         title: "Execute scoped contract calls",
         description:
-          "Run one or more contract calls allowed by this card's scope, atomically in one redemption (e.g. approve + swap). Targets and methods outside the card's scope are refused. Args are structured; the server encodes calldata.",
+          "Run one or more contract calls allowed by this card's scope, atomically in one redemption (e.g. approve + swap). Targets and methods outside the card's scope are refused. Pass simple calls as method + args (the server encodes calldata); pass complex calls (tuple/array/multicall args, e.g. Uniswap exactInputSingle) as raw `data` (the 4-byte selector is still checked against the allowlist). Calls carry no native ETH value (value is 0).",
         inputSchema: {
           calls: z
             .array(
               z.object({
                 target: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
-                method: z.string().describe('human signature, e.g. "approve(address,uint256)"'),
-                args: z.array(z.union([z.string(), z.number(), z.boolean()])).describe("positional args; numbers as strings for uint256"),
+                method: z.string().optional().describe('human signature, e.g. "approve(address,uint256)". Omit when passing raw `data`.'),
+                args: z
+                  .array(z.union([z.string(), z.number(), z.boolean()]))
+                  .optional()
+                  .describe("positional args for `method`; uint256 as decimal strings. Flat scalars only; for tuple/array/bytes args use `data`."),
+                data: z
+                  .string()
+                  .regex(/^0x([0-9a-fA-F]{2}){4,}$/)
+                  .optional()
+                  .describe("raw ABI-encoded calldata (whole-byte, >= 4-byte selector) for complex methods. Selector is checked against the card's allowlist. Use instead of method + args."),
               }),
             )
             .min(1)
@@ -286,7 +295,7 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
         },
         annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
       },
-      async (args: { calls: Array<{ target: string; method: string; args: Array<string | number | boolean> }>; memo?: string; idempotency_key?: string }) =>
+      async (args: { calls: Array<{ target: string; method?: string; args?: Array<string | number | boolean>; data?: string }>; memo?: string; idempotency_key?: string }) =>
         run(() =>
           locked(() => {
             const executions = args.calls.map((call) => encodeScopedCall(card.terms, call));
@@ -320,6 +329,13 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
                   lifetime: z.object({ amount: z.string() }).optional(),
                 })
                 .optional(),
+              contract: z
+                .object({
+                  targets: z.array(z.string().regex(/^0x[0-9a-fA-F]{40}$/)).min(1),
+                  selectors: z.array(z.string()).min(1),
+                })
+                .optional()
+                .describe("contract scope for the child; targets AND selectors must be a SUBSET of this card's"),
               expiry: z.number().int().optional(),
               maxUses: z.number().int().min(1).optional(),
               perTxMax: z.string().optional(),
@@ -370,33 +386,63 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
 
 function encodeScopedCall(
   terms: CardTerms,
-  call: { target: string; method: string; args: Array<string | number | boolean> },
+  call: { target: string; method?: string; args?: Array<string | number | boolean>; data?: string },
 ): WireExecution {
-  const scope = contractLeafScope(terms.contract!);
+  // Validate against the DECLARED scope (NOT the fee-safe one that unions in USDC +
+  // transfer for the fee leg) so a card scoped to e.g. Uniswap can't call USDC.transfer.
+  // Declared selectors are already canonical (validateTerms normalizes at issue time).
+  const scope = declaredContractScope(terms.contract!);
   if (!scope.targets.some((t) => t.toLowerCase() === call.target.toLowerCase())) {
     throw new RefusalError("target_not_allowed", `target ${call.target} is outside the card's scope`, {
       target: call.target,
     });
   }
-  const sig = scope.selectors.find((s) => s === call.method);
-  if (!sig) {
-    throw new RefusalError("method_not_allowed", `method ${call.method} is outside the card's scope`, {
-      method: call.method,
-    });
+  if (call.data !== undefined && (call.method !== undefined || call.args !== undefined)) {
+    throw new RefusalError("invalid_terms", "pass either method + args or raw data, not both");
   }
-  let data: WireExecution["data"];
-  try {
-    // dynamic signature string -> viem's template-literal abi type collapses; runtime is fine
-    const abi = parseAbi([`function ${sig}`] as never) as import("viem").Abi;
-    const functionName = sig.slice(0, sig.indexOf("("));
-    data = encodeFunctionData({
-      abi,
-      functionName,
-      args: call.args.map(coerceAbiArg) as never,
+  let data: Hex;
+  if (call.data !== undefined) {
+    // raw calldata path (tuple/array/multicall args): enforce the method allowlist via
+    // the canonical 4-byte selector. The on-chain allowedMethods enforcer checks it again.
+    const selector = call.data.slice(0, 10).toLowerCase();
+    const allowed = scope.selectors.some((s) => {
+      try {
+        return toFunctionSelector(canonicalSelector(s)).toLowerCase() === selector;
+      } catch {
+        return false;
+      }
     });
-  } catch (e) {
-    throw new RefusalError("invalid_terms", `could not encode ${call.method}: ${e instanceof Error ? e.message : e}`);
+    if (!allowed) {
+      throw new RefusalError("method_not_allowed", `selector ${selector} is outside the card's scope`, { selector });
+    }
+    data = call.data as Hex;
+  } else {
+    if (!call.method) {
+      throw new RefusalError("invalid_terms", "each call needs either method + args or raw data");
+    }
+    // canonicalize the requested method so "withdraw(uint)" matches a stored "withdraw(uint256)"
+    const wanted = canonicalSelector(call.method);
+    const sig = scope.selectors.find((s) => s === wanted);
+    if (!sig) {
+      throw new RefusalError("method_not_allowed", `method ${call.method} is outside the card's scope`, {
+        method: call.method,
+      });
+    }
+    try {
+      // dynamic signature string -> viem's template-literal abi type collapses; runtime is fine
+      const abi = parseAbi([`function ${sig}`] as never) as import("viem").Abi;
+      const functionName = sig.slice(0, sig.indexOf("("));
+      data = encodeFunctionData({
+        abi,
+        functionName,
+        args: (call.args ?? []).map(coerceAbiArg) as never,
+      });
+    } catch (e) {
+      throw new RefusalError("invalid_terms", `could not encode ${call.method}: ${e instanceof Error ? e.message : e}`);
+    }
   }
+  // Contract calls carry no native ETH value: the carved leaf's FunctionCall scope
+  // caps value at 0 on-chain (SDK default), so payable-with-value is a v2 item.
   return { target: call.target as Address, value: "0", data };
 }
 

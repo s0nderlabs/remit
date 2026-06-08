@@ -2,6 +2,25 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.5.0] - 2026-06-08
+
+The contract lane: a card can scope an agent to specific contract calls (swaps, staking, mints), not just USDC payments.
+
+### Added
+
+- **Contract cards + the `execute` tool**: a card can be scoped to specific contract targets and method selectors instead of (or alongside) a USDC budget. The agent calls `execute` with `{target, method, args}` (the server ABI-encodes) or raw `{target, data}` calldata for tuple/array/multicall methods like Uniswap `exactInputSingle`; targets or methods outside the card's declared scope are refused before anything reaches the chain, and the on-chain `allowedTargets`/`allowedMethods` enforcers check the same scope again. Multiple calls redeem atomically in one transaction (e.g. approve + swap). Validated live on Base mainnet across Uniswap swaps, Aave supply/withdraw, ERC20 transfers, contract sub-cards, and composite pay+contract cards.
+- **Contract sub-cards**: `issue_subcard` can narrow contract scope (targets and selectors must be a subset of the parent's), so a lead agent hands a sub-agent an even tighter contract card (chain-3 redelegation).
+- Method signatures are normalized to their canonical form (`uint` -> `uint256`, whitespace stripped) so the encoder, the raw-data selector check, and the on-chain enforcer always agree; unparseable signatures are rejected at issue.
+
+### Fixed
+
+- **Scope-escape closed**: the fee-leg mechanism unioned `USDC.transfer` into every contract card's on-chain scope, which let a card scoped to e.g. Uniswap also call `USDC.transfer` to move funds. The agent's calls are now validated against the raw declared scope; the fee-leg union stays internal to the redemption.
+- **`maxUses` no longer trips early on-chain**: the on-chain `LimitedCallsEnforcer` counts per execution and every redemption appends a fee-leg execution, so a `maxUses:N` card was exhausted on-chain far sooner than `N` redemptions. The on-chain limit is now scaled to the worst-case executions per redemption (contract `x6`, pay/x402 `x2`); `maxUses` is enforced as a redemption count server-side.
+
+### Notes
+
+- Native ETH value on contract calls (payable methods) is deferred to a later release: contract calls carry value 0 (the carved leaf caps value at 0 on-chain).
+
 ## [0.4.0] - 2026-06-07
 
 The OAuth lane: OAuth-only MCP clients (notably ChatGPT) can now connect a card.
