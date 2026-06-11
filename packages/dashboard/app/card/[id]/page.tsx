@@ -1,9 +1,10 @@
 "use client";
 
-// Card detail: the same slab language, scoped to one card. A single dossier —
+// Card detail: the same slab language, scoped to one card. A single dossier ·
 // no carousel, no create affordance; the back link rides the floating chrome.
 
 import { use, useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { api, type CardState, type Charge, type TreeNode } from "@/lib/api";
 import { useRemit } from "../../useRemit";
 import { Cockpit } from "../../components/Shell";
@@ -14,6 +15,7 @@ type Detail = CardState & { charges: Charge[]; k_agent_address: string };
 
 export default function CardPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const router = useRouter();
   const remit = useRemit();
   const { address, logout } = remit;
   const [card, setCard] = useState<Detail | null>(null);
@@ -102,7 +104,7 @@ export default function CardPage({ params }: { params: Promise<{ id: string }> }
         refresh={refresh}
         roots={[node]}
         currentId={card.card_id}
-        bayLabel={card.parent_card_id ? "this sub-card" : "this card"}
+        onDeleted={() => router.replace("/")}
       />
     </Cockpit>
   );

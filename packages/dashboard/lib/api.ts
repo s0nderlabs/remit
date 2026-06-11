@@ -32,7 +32,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     cache: "no-store",
   });
   // a non-JSON error body (edge/proxy HTML on 502/503) must not surface as a raw
-  // SyntaxError — fall back to the status line.
+  // SyntaxError · fall back to the status line.
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.message ?? body?.error ?? `http ${res.status}`);
   return body as T;
@@ -106,7 +106,7 @@ export type Charge = {
 
 export const api = {
   // --- Privy lane: onboard + client-signed issuance ---
-  // proof = personal_sign("remit-onboard:v1:<did>") — binds the wallet to THIS login
+  // proof = personal_sign("remit-onboard:v1:<did>") · binds the wallet to THIS login
   onboard: (address: string, auth7702: Wire7702Auth, proof: Hex) =>
     call<{ user_id: string; address: string; revocation_nonce: string; has_auth7702: boolean }>("/onboard", {
       method: "POST",
@@ -135,6 +135,8 @@ export const api = {
   rotate: (id: string) => call<{ card_url: string }>(`/cards/${id}/rotate`, { method: "POST" }),
   freeze: (id: string) => call<{ status: string }>(`/cards/${id}/freeze`, { method: "POST" }),
   unfreeze: (id: string) => call<{ status: string }>(`/cards/${id}/unfreeze`, { method: "POST" }),
+  // bookkeeping removal of a DEAD card + its subtree (server refuses live cards)
+  deleteCard: (id: string) => call<{ deleted: boolean; removed: number }>(`/cards/${id}`, { method: "DELETE" }),
 
   // --- on-chain USER-signed ops: the embedded wallet signs an admin leaf in the
   // browser (prepare -> signDelegation -> finalize). Sub-card revokes come back

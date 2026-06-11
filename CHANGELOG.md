@@ -2,6 +2,32 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.10.0] - 2026-06-11
+
+The dashboard refined live, round by round: the centered card-deck hero, a real dark mode, a delete lane for dead cards, and a long polish pass over every floating surface. Shipped through a 3-reviewer pass (2 server-side fixes, 5 UI fixes applied).
+
+### Added
+
+- **The card deck**: the carousel is now a stack. The active card sits front and center with its name + status above it; the next card peeks out behind the right edge in one uniform sliver. Navigate by dragging the card, swiping the trackpad (the deck consumes horizontal wheel gestures; the page never rubber-bands), clicking the peek, or the dots; a quiet `+` beside the dots is the only create affordance.
+- **Dark mode**, riding the ink family: the page is the brand ink itself (#141417), every surface steps lighter from there, and the card object goes graphite (its silk band stays saturated). Animated sun/moon toggle in the rail; choice persists, OS preference seeds the first visit, no flash on load.
+- **Delete for dead cards**: a `delete card` verb on revoked/expired/nuked cards walks the destructive-action modal and calls a new `DELETE /cards/:id` that removes the card, its sub-card tree, and its charge history, and revokes the subtree's OAuth grants. The engine refuses anything live (including any live descendant, checked subtree-wide, not assumed from the revoke cascade). Card pages navigate home after deletion.
+- **Venice drafting progress**: while the compiler runs, the intent box locks, a thin accent pulse rides under it, the button carries a spinner, and the minicard's silk flows. Compiler adjustments now land as ONE "venice adjusted the draft" notes panel instead of loose warning strips.
+- A custom dropdown (canvas popover, check on the selected option, arrow keys, Escape, click-away and blur close) replaces the native selects.
+
+### Changed
+
+- Floating surfaces got a real elevation system: scrimmed dialogs ride a `--panel` tone, anchored popovers ride `--float` (the page hue itself, lifted by edge + shadow). The profile menu portals to `<body>` (the sticky rail is a stacking context that painted page content over it) and closes on resize.
+- The connect overlay reworked: the credential sits in a quiet inset box with an inline copy icon; the harness pill soup became a labeled grid where each row's glyph says what it does (open prefilled vs copy command); rotate is its own quiet action in the foot.
+- The issue modal's term sheet regrouped into titled sections (card / pay · usdc / execute · contracts) with hairline rules; orphan fields joined their groups.
+- Focus speaks in ink, not halos: inputs lift to canvas with a single quiet border on focus; the UA's colored focus rings are gone. Scrollbars hidden everywhere (scrolling untouched). A real six-arm snowflake on the freeze verb.
+
+### Fixed
+
+- `shortHex(tx, 10, 0)` rendered the FULL hash after the ellipsis (`slice(-0)` is `slice(0)`), spilling tx links out of the revoke/nuke done-modals and the terms-pane signature row. Long tokens now also hard-wrap inside modals as a backstop.
+- The wheel listener attached before cards loaded and never re-armed, so trackpad deck navigation silently did nothing on first load.
+- CORS allowlist lacked DELETE, so card deletion died in preflight from the dashboard origin.
+- A drag release no longer leaks a click that flips the card; deleting the selected card clears the stale selection instead of pointing the deck at a vanished card.
+
 ## [0.9.0] - 2026-06-11
 
 The dashboard rebuilt: one screen, one surface, designed against a studio-grade reference. Shipped through a 3-reviewer pre-release pass that confirmed zero behavior loss from the rebuild (every guard from the old UI verified re-established) plus 8 fixes applied.

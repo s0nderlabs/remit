@@ -14,7 +14,7 @@ export function splitAmount(v: string | number | null | undefined): [string, str
   let whole = Math.floor(Math.abs(n));
   let cents = Math.round((Math.abs(n) - whole) * 100);
   if (cents === 100) {
-    // .995+ rounds up to the next dollar — carry, or we'd render "$9.100"
+    // .995+ rounds up to the next dollar · carry, or we'd render "$9.100"
     whole += 1;
     cents = 0;
   }
@@ -28,7 +28,9 @@ export function fmtUsd(v: string | number | null | undefined): string {
 
 export function shortHex(s: string | null | undefined, head = 6, tail = 4): string {
   if (!s) return "";
-  return s.length <= head + tail + 1 ? s : `${s.slice(0, head)}…${s.slice(-tail)}`;
+  if (s.length <= head + tail + 1) return s;
+  // tail 0 must mean "no tail": slice(-0) is slice(0), i.e. the WHOLE string
+  return `${s.slice(0, head)}…${tail > 0 ? s.slice(-tail) : ""}`;
 }
 
 /** derive the card "PAN": four 4-hex groups from a 0x address/id */
@@ -65,7 +67,7 @@ const easeOut = (t: number) => 1 - Math.pow(2, -10 * t);
 
 // The full odometer sweep plays once per session (the first dashboard entry) so the
 // daily driver stays calm afterwards; a "#demo" hash replays the full choreography
-// on every view for filming (hash, not ?query — Privy strips query params).
+// on every view for filming (hash, not ?query · Privy strips query params).
 let theaterDone = false;
 const demoMode = () => typeof window !== "undefined" && window.location.hash.includes("demo");
 const theaterActive = () => demoMode() || !theaterDone;
@@ -122,16 +124,20 @@ export function useCountUp(target: number, mountMs = 1400, updateMs = 450): numb
 
 const SPECTRUM = ["#FFB23E", "#FF5C8A", "#E14FD7", "#7A5CFF", "#2D9FF7"];
 
-function guillochePaths(W: number, H: number, n: number, amp: number) {
+function guillochePaths(W: number, H: number, n: number, amp: number, phase = 0) {
   const out: { d: string; accent: boolean }[] = [];
   for (let f = 0; f < 2; f++) {
     for (let i = 0; i < n; i++) {
       const ph = (i / n) * Math.PI * 2;
       const a = amp * (0.55 + 0.45 * Math.sin(i * 1.7));
       const dir = f === 0 ? 1 : -1;
+      // the two strand families counter-flow when the phase advances · the silk weaves
       let d = "";
       for (let x = 0; x <= W; x += 8) {
-        const y = H / 2 + dir * Math.sin(x / 46 + ph) * a + Math.sin(x / 130 + ph * 2) * a * 0.5;
+        const y =
+          H / 2 +
+          dir * Math.sin(x / 46 + ph + dir * phase) * a +
+          Math.sin(x / 130 + ph * 2 - dir * phase * 0.6) * a * 0.5;
         d += (x === 0 ? "M" : "L") + x.toFixed(1) + "," + y.toFixed(1);
       }
       out.push({ d, accent: f === 0 });
@@ -147,6 +153,7 @@ export function Guilloche({
   amp = 26,
   accentOpacity = 0.55,
   inkOpacity = 0.08,
+  animate = false,
 }: {
   width: number;
   height: number;
@@ -154,9 +161,27 @@ export function Guilloche({
   amp?: number;
   accentOpacity?: number;
   inkOpacity?: number;
+  /** while true, the strands flow (rAF phase advance); the phase freezes in place on stop */
+  animate?: boolean;
 }) {
   const gid = useId().replace(/[^a-zA-Z0-9]/g, "");
-  const paths = useMemo(() => guillochePaths(width, height, strands, amp), [width, height, strands, amp]);
+  const [phase, setPhase] = useState(0);
+  const phaseRef = useRef(0);
+  useEffect(() => {
+    if (!animate) return;
+    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      phaseRef.current += (now - last) * 0.0011;
+      last = now;
+      setPhase(phaseRef.current);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [animate]);
+  const paths = useMemo(() => guillochePaths(width, height, strands, amp, phase), [width, height, strands, amp, phase]);
   return (
     <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
       <defs>
@@ -183,10 +208,13 @@ export function Guilloche({
 // ---------- verb icons (the quiet actions beside Connect agent) ----------
 
 export function IconSnowflake({ size = 15 }: { size?: number }) {
+  // a real snowflake: three axes at 60° with branch chevrons on all six arms
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
-      <path d="M12 3v18M4.2 7.5l15.6 9M19.8 7.5l-15.6 9" />
-      <path d="M12 3l-2.2 2.2M12 3l2.2 2.2M12 21l-2.2-2.2M12 21l2.2-2.2" />
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M12 2.5v19M3.77 7.25l16.46 9.5M20.23 7.25l-16.46 9.5" />
+      <path d="M9.7 4.5L12 6.8l2.3-2.3M9.7 19.5l2.3-2.3 2.3 2.3" />
+      <path d="M3.9 10.4l3.14-.84.84-3.14M20.1 13.6l-3.14.84-.84 3.14" />
+      <path d="M20.1 10.4l-3.14-.84-.84-3.14M3.9 13.6l3.14.84.84 3.14" />
     </svg>
   );
 }
@@ -201,7 +229,7 @@ export function IconRevoke({ size = 15 }: { size?: number }) {
 }
 
 // ---------- dot-matrix chip ----------
-// Animated: the chip "ticks" like data moving through it — each beat one base
+// Animated: the chip "ticks" like data moving through it · each beat one base
 // dot rests while two transient dots light up. Deterministic per frame, slow,
 // and disabled under prefers-reduced-motion.
 
@@ -229,7 +257,7 @@ export function ChipDots() {
 
 // ---------- the barcode histogram ----------
 // Micro-bars at whisper volume; the scrubber owns all focus (a 1px ink line +
-// bold numeral tooltip). Single hue, no gridlines, no legend — the qclay chart.
+// bold numeral tooltip). Single hue, no gridlines, no legend · the qclay chart.
 
 export function Barcode({
   values,
@@ -260,7 +288,7 @@ export function Barcode({
     >
       <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden>
         {values.map((v, i) => {
-          // zero days still print a 3px tick — the barcode texture is the point
+          // zero days still print a 3px tick · the barcode texture is the point
           const h = v > 0 ? Math.max(5, (v / max) * (height - 16)) : 3;
           return (
             <rect
@@ -300,7 +328,7 @@ export type CardStatus = "active" | "frozen" | "revoked" | "expired" | "nuked" |
 
 export const isDead = (s: CardStatus) => s !== "active" && s !== "frozen";
 
-/** lowercase status word with a state dot — quieter than a pill, reads like a fact */
+/** lowercase status word with a state dot · quieter than a pill, reads like a fact */
 export function StatusPill({ status }: { status: CardStatus }) {
   const tone = status === "active" ? "live" : status === "frozen" ? "frozen" : "dead";
   return (

@@ -1,10 +1,10 @@
 // Dashboard REST API. Two auth lanes on every /api route:
-//   - ADMIN (ops): Bearer REMIT_ADMIN_TOKEN — full access, server-side curl/scripts.
+//   - ADMIN (ops): Bearer REMIT_ADMIN_TOKEN · full access, server-side curl/scripts.
 //   - PRIVY (dashboard): Bearer <Privy access token>, verified offline against the
 //     app JWKS. Every read/control is scoped to the cards of the AUTHENTICATED user.
 //     The wallet<->login binding is PROVEN at onboard: the embedded wallet signs
 //     "remit-onboard:v1:<did>" (personal_sign), so a Privy login can only ever claim
-//     an address whose key it holds — and the DID inside the message kills replay.
+//     an address whose key it holds · and the DID inside the message kills replay.
 // Two issuance lanes:
 //   - DEV (server-signed): POST /cards signs the root with the local A_user key (admin only).
 //   - PRIVY (client-signed): POST /onboard stores the embedded wallet's 7702 auth;
@@ -21,6 +21,7 @@ import {
   EngineError,
   RefusalError,
   cardState,
+  deleteDeadCard,
   finalizeAdminOp,
   freezeCard,
   unfreezeCard,
@@ -71,7 +72,7 @@ export function apiRoutes(deps: AppDeps, oauth: OAuthStore): Hono<{ Variables: {
   const now = () => Math.floor(Date.now() / 1000);
 
   // Prepared (unsigned) cards awaiting the browser's signature. In-memory, single
-  // process, TTL'd — a prepare that never finalizes just expires.
+  // process, TTL'd · a prepare that never finalizes just expires.
   const pending = new Map<string, { prepared: PreparedRootCard; expires: number }>();
   const PENDING_TTL_MS = 5 * 60_000;
   const gcPending = () => {
@@ -82,7 +83,7 @@ export function apiRoutes(deps: AppDeps, oauth: OAuthStore): Hono<{ Variables: {
   // Prepared admin ops (client-signed revoke/nuke). STRICTER than card prepares: a
   // SIGNED admin leaf is live spend authority (admin call + fee transfer), so these
   // get a 2-minute TTL (enforced at finalize, not just opportunistic GC) and are
-  // single-use — consumed the instant the signature verifies, BEFORE the relayer send,
+  // single-use · consumed the instant the signature verifies, BEFORE the relayer send,
   // never re-finalizable past that point. `inProgress` is the SYNCHRONOUS claim: two
   // concurrent finalizes both pass Map.get before the first await, so the flag (set
   // before any await) is what actually makes single-use atomic.
@@ -145,7 +146,7 @@ export function apiRoutes(deps: AppDeps, oauth: OAuthStore): Hono<{ Variables: {
     const auth = c.get("auth");
     if (auth.kind !== "privy") throw new ForbiddenError("privy session required");
     const user = deps.store.getUserByPrivyDid(auth.did);
-    if (!user) throw new ForbiddenError("not onboarded — sign in on the dashboard first");
+    if (!user) throw new ForbiddenError("not onboarded · sign in on the dashboard first");
     return user;
   };
 
@@ -192,7 +193,7 @@ export function apiRoutes(deps: AppDeps, oauth: OAuthStore): Hono<{ Variables: {
         if (!isAddressEqual(signer, body.address)) {
           throw new RefusalError("invalid_terms", "onboard proof does not recover to the wallet address");
         }
-        // binding conflicts (belt and suspenders — the proof already makes cross-claims unforgeable)
+        // binding conflicts (belt and suspenders · the proof already makes cross-claims unforgeable)
         const byDid = deps.store.getUserByPrivyDid(auth.did);
         if (byDid && byDid.id !== userId) {
           throw new ForbiddenError("this login is already bound to a different wallet");
@@ -242,7 +243,7 @@ export function apiRoutes(deps: AppDeps, oauth: OAuthStore): Hono<{ Variables: {
       }
       const userId = privyUserId(userAddress);
       if (!deps.store.getUser(userId)) {
-        throw new RefusalError("invalid_terms", "user not onboarded — call /onboard first");
+        throw new RefusalError("invalid_terms", "user not onboarded · call /onboard first");
       }
       const prepared = await prepareRootCard(
         { store: deps.store, userAddress },
@@ -385,10 +386,24 @@ export function apiRoutes(deps: AppDeps, oauth: OAuthStore): Hono<{ Variables: {
     }),
   );
 
+  // Hard-delete a DEAD card and its subtree (bookkeeping removal; the engine
+  // guard refuses anything still alive or merely frozen). Token ledger rides
+  // along: capture the subtree ids BEFORE the rows vanish, revoke their OAuth
+  // grants AFTER the guard passes (a refused delete must not touch tokens).
+  app.delete("/cards/:id", (c) =>
+    handle(c, async () => {
+      const cardId = ownedCard(c, c.req.param("id")).id;
+      const ids = deps.store.subtreeIds(cardId);
+      const r = deleteDeadCard(deps.store, cardId);
+      for (const id of ids) oauth.revokeTokensByCardId(id);
+      return { deleted: true, removed: r.removed };
+    }),
+  );
+
   // ---- client-signed revoke/nuke (the Privy lane): prepare -> browser signs -> finalize ----
 
   // Step 1: build the admin leaf for the browser to sign. Sub-cards die server-side
-  // immediately (their on-chain delegator is the parent's K_agent, not A_user — there
+  // immediately (their on-chain delegator is the parent's K_agent, not A_user · there
   // is nothing for the user to sign).
   app.post("/cards/:id/revoke/prepare", (c) =>
     handle(c, async () => {
@@ -570,7 +585,7 @@ export function apiRoutes(deps: AppDeps, oauth: OAuthStore): Hono<{ Variables: {
       const r = ownedRequest(c, body.request_id);
       const card = ownedCard(c, body.card_id); // foreign cards look nonexistent
       // liveness through cardState so a time-EXPIRED card (still stored 'active') is rejected
-      // alongside revoked/nuked — never mint a connect token for a card the user believes is dead.
+      // alongside revoked/nuked · never mint a connect token for a card the user believes is dead.
       const state = cardState(deps.store, card.id, now());
       if (!state || state.status === "revoked" || state.status === "nuked" || state.status === "expired") {
         throw new RefusalError("card_revoked", "this card is no longer live");

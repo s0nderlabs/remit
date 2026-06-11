@@ -9,6 +9,7 @@ import { useState } from "react";
 import { api, type CardState } from "@/lib/api";
 import type { useRemit } from "../useRemit";
 import { IconRevoke, isDead, shortHex } from "./ui";
+import { DangerModal, type DangerPhase } from "./Confirm";
 
 type Remit = ReturnType<typeof useRemit>;
 
@@ -53,7 +54,7 @@ export function allowance(card: CardState) {
 
 // ---------------------------------------------------------------------------
 // TermsGrid: the delegation term sheet (inside the foot accordion's sheet).
-// Two grouped stacks of quiet rows — what the card can do (scope) left, how
+// Two grouped stacks of quiet rows · what the card can do (scope) left, how
 // long it lives and who holds it (lifecycle + enforcement) right. Values
 // humanized: "uncapped", "any merchant", "unlimited", real dates.
 // ---------------------------------------------------------------------------
@@ -69,7 +70,7 @@ export function TermsGrid({ card, agentAddress }: { card: CardState; agentAddres
   const t = card.terms;
   const ct = t.contract;
   const expires = card.expires_at
-    ? `${new Date(card.expires_at * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}${
+    ? `${new Date(card.expires_at * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }).toLowerCase()}${
         !isDead(card.status) && card.expires_at * 1000 > Date.now()
           ? ` · ${Math.max(1, Math.ceil((card.expires_at * 1000 - Date.now()) / 86400000))}d left`
           : ""
@@ -144,10 +145,10 @@ export function TermsGrid({ card, agentAddress }: { card: CardState; agentAddres
 // ---------------------------------------------------------------------------
 // Revoke: top-level cards sign an admin leaf with the embedded wallet (on-chain
 // disableDelegation via the relayer, gasless); sub-cards die server-side instantly.
-// Logic identical to v1; presentation re-skinned.
+// Logic identical to v1; the confirm/busy/done staircase now walks the shared
+// destructive-action modal. The component stays mounted when the card dies so
+// the done state survives the status flip behind the scrim.
 // ---------------------------------------------------------------------------
-
-type RevokePhase = "idle" | "confirm" | "signing" | "submitting" | "done" | "error";
 
 export function RevokeButton({
   cardId,
@@ -164,16 +165,17 @@ export function RevokeButton({
   embeddedReady: boolean;
   onDone: () => Promise<void> | void;
 }) {
-  const [phase, setPhase] = useState<RevokePhase>("idle");
+  const [open, setOpen] = useState(false);
+  const [phase, setPhase] = useState<DangerPhase>("confirm");
+  const [stage, setStage] = useState<"signing" | "submitting">("signing");
   const [tx, setTx] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-
-  if (!revocable && phase !== "done") return null;
 
   async function go() {
     setErr(null);
     try {
-      setPhase(isSub ? "submitting" : "signing");
+      setPhase("busy");
+      setStage(isSub ? "submitting" : "signing");
       const prep = await api.prepareRevoke(cardId);
       if (!("prepare_id" in prep)) {
         setPhase("done");
@@ -181,7 +183,7 @@ export function RevokeButton({
         return;
       }
       const signature = await signDelegation(prep.delegation);
-      setPhase("submitting");
+      setStage("submitting");
       const fin = await api.finalizeRevoke(cardId, prep.prepare_id, signature);
       setTx(fin.tx);
       setPhase("done");
@@ -192,58 +194,129 @@ export function RevokeButton({
     }
   }
 
-  if (phase === "done") {
-    return (
-      <span className="verbnote" data-testid="revoke-done">
-        revoked ✓{" "}
-        {tx && (
-          <a href={`https://basescan.org/tx/${tx}`} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
-            {shortHex(tx, 10, 0)}
-          </a>
-        )}
-      </span>
-    );
-  }
-  if (phase === "signing" || phase === "submitting") {
-    return (
-      <span className="verbnote" data-testid="revoke-busy">
-        {phase === "signing" ? "signing with your wallet…" : isSub ? "killing server-side…" : "submitting on-chain…"}
-      </span>
-    );
-  }
-  if (phase === "confirm") {
-    return (
-      <span style={{ display: "inline-flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <span className="verbnote err">
-          {isSub ? "kill this sub-card (and its descendants)?" : "permanently revoke on-chain (kills the whole subtree)?"}
-        </span>
-        <button className="danger-ghost" onClick={go} data-testid="revoke-confirm">
-          yes, revoke
-        </button>
-        <button onClick={() => setPhase("idle")}>cancel</button>
-      </span>
-    );
-  }
   return (
-    <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+    <>
       <button
         className="vpill danger"
-        disabled={!isSub && !embeddedReady}
-        onClick={() => setPhase("confirm")}
+        disabled={!revocable || (!isSub && !embeddedReady)}
+        onClick={() => setOpen(true)}
         data-testid="revoke"
         title={isSub ? "revoke · server-side kill, instant" : "revoke · on-chain disableDelegation, signed by your embedded wallet"}
       >
         <IconRevoke size={13} />
         revoke
       </button>
-      {err && <span className="verbnote err">revoke failed: {err}</span>}
-    </span>
+      <DangerModal
+        open={open}
+        phase={phase}
+        prefix="revoke"
+        title={isSub ? "revoke this sub-card?" : "revoke this card?"}
+        body={
+          isSub
+            ? "the sub-card and every card carved beneath it die instantly. the agent holding it loses authority for good."
+            : "permanently revokes the delegation on-chain. every sub-card carved from it dies with it: the whole subtree, one transaction."
+        }
+        confirmLabel="yes, revoke"
+        busyNote={stage === "signing" ? "signing with your wallet…" : isSub ? "killing server-side…" : "submitting on-chain…"}
+        doneTitle="card revoked"
+        doneNote={
+          <>
+            revoked ✓ the authority is dead.{" "}
+            {tx && (
+              <a href={`https://basescan.org/tx/${tx}`} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+                {shortHex(tx, 10, 0)}
+              </a>
+            )}
+          </>
+        }
+        errorNote={err ? `revoke failed: ${err}` : undefined}
+        onConfirm={go}
+        onClose={() => {
+          setOpen(false);
+          setPhase("confirm");
+        }}
+      />
+    </>
+  );
+}
+
+/** Bookkeeping removal for a DEAD card: the tree row, its sub-cards and its
+ * charge history leave the dashboard. The server refuses anything alive. */
+export function DeleteButton({
+  cardId,
+  hasKids,
+  onDone,
+}: {
+  cardId: string;
+  hasKids: boolean;
+  onDone: () => Promise<void> | void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [phase, setPhase] = useState<DangerPhase>("confirm");
+  const [err, setErr] = useState<string | null>(null);
+
+  async function go() {
+    setErr(null);
+    try {
+      setPhase("busy");
+      await api.deleteCard(cardId);
+      setPhase("done");
+      await onDone();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setPhase("error");
+    }
+  }
+
+  return (
+    <>
+      <button
+        className="vpill danger stay"
+        onClick={() => setOpen(true)}
+        data-testid="delete-card"
+        title="remove this dead card from the dashboard"
+      >
+        <IconTrash />
+        delete card
+      </button>
+      <DangerModal
+        open={open}
+        phase={phase}
+        prefix="delete"
+        title="delete this card?"
+        body={
+          hasKids
+            ? "the authority is already dead on-chain. this removes the card, its sub-cards and their charge history from your dashboard for good."
+            : "the authority is already dead on-chain. this removes the card and its charge history from your dashboard for good."
+        }
+        confirmLabel="yes, delete"
+        busyNote="removing…"
+        busyHint="bookkeeping only · nothing to wait for on-chain"
+        doneTitle="card deleted"
+        doneNote="gone. the books are clean."
+        errorNote={err ? `delete failed: ${err}` : undefined}
+        onConfirm={go}
+        onClose={() => {
+          setOpen(false);
+          setPhase("confirm");
+        }}
+      />
+    </>
+  );
+}
+
+function IconTrash() {
+  return (
+    <svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M1.8 3.8h10.4M5.4 3.8V2.6a1 1 0 0 1 1-1h1.2a1 1 0 0 1 1 1v1.2M3.2 3.8l.6 7.6a1.2 1.2 0 0 0 1.2 1.1h4a1.2 1.2 0 0 0 1.2-1.1l.6-7.6" />
+      <path d="M5.8 6.4v3.4M8.2 6.4v3.4" />
+    </svg>
   );
 }
 
 // ---------------------------------------------------------------------------
 // Connect chips: per-harness install affordances for the card URL (#25).
-// Rendered inside the connect overlay; the URL is the credential — every
+// Rendered inside the connect overlay; the URL is the credential · every
 // snippet embeds it; treat them all as secrets.
 // ---------------------------------------------------------------------------
 
@@ -262,22 +335,63 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
   );
 }
 
-export function ConnectChips({
-  url,
-  cardName,
-  onRotate,
-  busy,
-}: {
-  url: string;
-  cardName: string;
-  onRotate?: () => void;
-  busy?: boolean;
-}) {
+function IconCopy() {
+  return (
+    <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="4.5" y="4.5" width="8" height="8" rx="2" />
+      <path d="M9.5 3V2.5a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V8A1.5 1.5 0 0 0 3 9.5h.5" />
+    </svg>
+  );
+}
+
+function IconCheck() {
+  return (
+    <svg viewBox="0 0 12 10" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M1.5 5.5l3 3 6-7" />
+    </svg>
+  );
+}
+
+function IconOpen() {
+  return (
+    <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M4.5 2H2.2A1.2 1.2 0 0 0 1 3.2v6.6A1.2 1.2 0 0 0 2.2 11h6.6A1.2 1.2 0 0 0 10 9.8V7.5" />
+      <path d="M7 1h4v4M11 1L5.5 6.5" />
+    </svg>
+  );
+}
+
+/** The credential surface: a quiet inset box, the copy action riding inside it. */
+export function UrlBox({ url, testid }: { url: string; testid?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="ovurl">
+      <span className="u" data-testid={testid}>
+        {url}
+      </span>
+      <button
+        className={`ovcopy${copied ? " done" : ""}`}
+        aria-label="copy url"
+        title="copy url"
+        onClick={async () => {
+          await navigator.clipboard.writeText(url);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }}
+      >
+        {copied ? <IconCheck /> : <IconCopy />}
+      </button>
+    </div>
+  );
+}
+
+export function ConnectChips({ url, cardName }: { url: string; cardName: string }) {
+  const [done, setDone] = useState<string | null>(null);
   const slug = cardName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "card";
   const name = `remit-${slug}`;
   const cli = `claude mcp add --transport http ${name} ${url}`;
   const codex = `codex mcp add ${name} --url ${url}`;
-  // openclaw defaults HTTP servers to SSE when the transport flag is omitted — keep it explicit
+  // openclaw defaults HTTP servers to SSE when the transport flag is omitted · keep it explicit
   const openclaw = `openclaw mcp add ${name} --url ${url} --transport streamable-http`;
   const json = JSON.stringify({ mcpServers: { [name]: { type: "http", url } } }, null, 2);
   const cursorLink = `cursor://anysphere.cursor-deeplink/mcp/install?name=${encodeURIComponent(name)}&config=${
@@ -288,24 +402,34 @@ export function ConnectChips({
   const claudeAiLink = `https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=${encodeURIComponent(name)}&connectorUrl=${encodeURIComponent(url)}`;
   // protocol-handler form: the WHOLE server config (name included) as one URL-encoded JSON
   const vscodeLink = `vscode:mcp/install?${encodeURIComponent(JSON.stringify({ name, type: "http", url }))}`;
+
+  const copy = (key: string, text: string) => async () => {
+    await navigator.clipboard.writeText(text);
+    setDone(key);
+    setTimeout(() => setDone((k) => (k === key ? null : k)), 1500);
+  };
+  const harnesses: { key: string; label: string; title: string; glyph: "copy" | "open"; act: () => void }[] = [
+    { key: "cc", label: "claude code", title: "copy the claude mcp add command", glyph: "copy", act: () => void copy("cc", cli)() },
+    { key: "cai", label: "claude.ai", title: "open a prefilled connector dialog", glyph: "open", act: () => void window.open(claudeAiLink, "_blank", "noopener") },
+    { key: "cdx", label: "codex", title: "copy the codex mcp add command", glyph: "copy", act: () => void copy("cdx", codex)() },
+    { key: "cur", label: "cursor", title: "open cursor's install prompt", glyph: "open", act: () => void (window.location.href = cursorLink) },
+    { key: "vsc", label: "vs code", title: "open vs code's install prompt", glyph: "open", act: () => void (window.location.href = vscodeLink) },
+    { key: "ocl", label: "openclaw", title: "copy the openclaw mcp add command", glyph: "copy", act: () => void copy("ocl", openclaw)() },
+    { key: "json", label: "json", title: "copy mcpServers json for any other client", glyph: "copy", act: () => void copy("json", json)() },
+  ];
+
   return (
     <div data-testid="connect-panel">
-      <div className="bchips">
-        <CopyButton text={url} label="copy url" />
-        <CopyButton text={cli} label="claude code" />
-        <button onClick={() => { window.open(claudeAiLink, "_blank", "noopener"); }}>claude.ai</button>
-        <CopyButton text={codex} label="codex" />
-        <button onClick={() => { window.location.href = cursorLink; }}>cursor</button>
-        <button onClick={() => { window.location.href = vscodeLink; }}>vs code</button>
-        <CopyButton text={openclaw} label="openclaw" />
-        <CopyButton text={json} label="json" />
-        {onRotate && (
-          <button onClick={onRotate} disabled={busy} data-testid="rotate-url" title="invalidate this URL and mint a new one">
-            rotate
+      <div className="hlabel">add to your agent</div>
+      <div className="hgrid">
+        {harnesses.map((h) => (
+          <button key={h.key} className={`hrow${done === h.key ? " done" : ""}`} title={h.title} onClick={h.act}>
+            <span>{h.label}</span>
+            {done === h.key ? <IconCheck /> : h.glyph === "copy" ? <IconCopy /> : <IconOpen />}
           </button>
-        )}
+        ))}
       </div>
-      <p className="bchint">claude.ai opens a prefilled connector dialog · codex/openclaw copy install commands · json fits most other clients.</p>
+      <p className="bchint">an arrow opens that harness prefilled · the rest copy an install command (json fits any other client)</p>
     </div>
   );
 }

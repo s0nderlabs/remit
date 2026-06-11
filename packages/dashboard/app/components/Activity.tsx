@@ -1,7 +1,7 @@
 "use client";
 
 // Activity: the tree-wide charge feed (crypto + fiat, one budget) with card
-// attribution — the compact dossier list and the 30-day daily-spend stats.
+// attribution · the compact dossier list and the 30-day daily-spend stats.
 
 import type { Charge } from "@/lib/api";
 import { fmtUsd, shortHex } from "./ui";
@@ -18,7 +18,13 @@ export function railLabel(kind: string): string {
   return kind;
 }
 
-/** "jun 9 · 14:32" — the charge row's quiet timestamp */
+// raw hex anywhere in a memo reads like a register dump · shorten every run in place
+const HEXISH = /0x[0-9a-fA-F]{10,}/g;
+export function tidyMemo(s: string): string {
+  return s.replace(HEXISH, (m) => shortHex(m, 6, 4));
+}
+
+/** "jun 9 · 14:32" · the charge row's quiet timestamp */
 export function fmtWhen(unixSec: number): string {
   const d = new Date(unixSec * 1000);
   const day = d.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase();
@@ -67,7 +73,7 @@ export function ChargeList({ rows, empty }: { rows: FeedRow[]; empty: string }) 
           <div className="arow" key={ch.id}>
             <span className="a-time">{fmtWhen(ch.at)}</span>
             <span>
-              <div className="a-name">{ch.memo || (ch.to ? shortHex(ch.to, 8, 4) : railLabel(ch.kind))}</div>
+              <div className="a-name">{ch.memo ? tidyMemo(ch.memo) : ch.to ? shortHex(ch.to, 8, 4) : railLabel(ch.kind)}</div>
               <div className="a-sub">{cardName}</div>
             </span>
             <span>

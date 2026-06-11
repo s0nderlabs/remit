@@ -34,7 +34,7 @@ export function createApp(deps: AppDeps): Hono {
         return allowed.includes(origin) ? origin : null;
       },
       allowHeaders: ["authorization", "content-type"],
-      allowMethods: ["GET", "POST", "OPTIONS"],
+      allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
     }),
   );
 

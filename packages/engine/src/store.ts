@@ -329,6 +329,23 @@ export class Store {
     this.db.query(`UPDATE cards SET status = $s WHERE id = $id`).run({ $s: status, $id: cardId });
   }
 
+  /** Hard-delete a card and its whole subtree, charge history included. Pure
+   * bookkeeping removal for DEAD trees: callers enforce the status guard.
+   * Children go before parents (foreign_keys = ON) · subtreeIds is root-first,
+   * so the card delete walks it in reverse. */
+  deleteCardTree(cardId: string): number {
+    const ids = this.subtreeIds(cardId);
+    if (ids.length === 0) return 0;
+    const delCharges = this.db.query(`DELETE FROM charges WHERE card_id = $id`);
+    const delCard = this.db.query(`DELETE FROM cards WHERE id = $id`);
+    const tx = this.db.transaction((items: string[]) => {
+      for (const id of items) delCharges.run({ $id: id });
+      for (const id of [...items].reverse()) delCard.run({ $id: id });
+    });
+    tx(ids);
+    return ids.length;
+  }
+
   /** Status update for a whole subtree (revoke kills descendants too). */
   setSubtreeStatus(cardId: string, status: CardStatus): void {
     const ids = this.subtreeIds(cardId);
@@ -425,10 +442,10 @@ export class Store {
   }
 
   /** x402 reservations orphaned 'pending' (request_id IS NULL: never reached a relayer
-   * broadcast — the inline finalize was lost to a process restart or an unhandled throw),
+   * broadcast · the inline finalize was lost to a process restart or an unhandled throw),
    * older than `before`. The reconcile sweep frees these so a dead reservation can't hold
    * a card's budget forever. x402 settlement is the seller's, so there is no fee-leg log
-   * of ours to match — a long-stale reservation is conservatively released. */
+   * of ours to match · a long-stale reservation is conservatively released. */
   pendingX402ChargesOlderThan(before: number): ChargeRow[] {
     const rows = this.db
       .query(

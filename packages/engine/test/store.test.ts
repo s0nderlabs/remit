@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Address } from "viem";
 import { Store, periodWindow, serializeCompiled, deserializeCompiled } from "../src/store";
 import { compileCard } from "../src/compiler";
+import { deleteDeadCard } from "../src/ops";
 import type { CardRow, ChargeRow } from "../src/store";
 
 const NOW = 1_780_000_000;
@@ -184,5 +185,59 @@ describe("accounting (subtree-wide, fee-inclusive, fixed windows)", () => {
     mkCharge(s, "b", "child", 1n, NOW);
     expect(s.usesCount("root")).toBe(1);
     expect(s.subtreeUsesCount("root")).toBe(2);
+  });
+});
+
+describe("deleteCardTree + deleteDeadCard (dead-only bookkeeping removal)", () => {
+  test("refuses a live card and a frozen card", () => {
+    const s = mkStore();
+    s.upsertUser({ id: USER.id, address: USER.address });
+    mkCard(s, "root");
+    expect(() => deleteDeadCard(s, "root", NOW)).toThrow(/revoke it before deleting/);
+    s.setCardStatus("root", "frozen");
+    expect(() => deleteDeadCard(s, "root", NOW)).toThrow(/revoke it before deleting/);
+    expect(s.getCard("root")).not.toBeNull();
+  });
+
+  test("revoked tree deletes whole subtree, charges included (children before parents)", () => {
+    const s = mkStore();
+    s.upsertUser({ id: USER.id, address: USER.address });
+    mkCard(s, "root");
+    mkCard(s, "child", "root");
+    mkCard(s, "grand", "child");
+    mkCharge(s, "c1", "root", 1_000_000n, NOW);
+    mkCharge(s, "c2", "grand", 2_000_000n, NOW);
+    s.setSubtreeStatus("root", "revoked");
+    const r = deleteDeadCard(s, "root", NOW);
+    expect(r.removed).toBe(3);
+    expect(s.getCard("root")).toBeNull();
+    expect(s.getCard("child")).toBeNull();
+    expect(s.getCard("grand")).toBeNull();
+    expect(s.subtreeSpentSince("root", 0)).toBe(0n);
+  });
+
+  test("expired-by-time deletes even while stored status is active", () => {
+    const s = mkStore();
+    s.upsertUser({ id: USER.id, address: USER.address });
+    mkCard(s, "root"); // expiry = NOW + 30d
+    const past = NOW + 31 * 86400;
+    const r = deleteDeadCard(s, "root", past);
+    expect(r.removed).toBe(1);
+    expect(s.getCard("root")).toBeNull();
+  });
+
+  test("unknown card refuses", () => {
+    const s = mkStore();
+    expect(() => deleteDeadCard(s, "ghost", NOW)).toThrow(/no such card/);
+  });
+test("a live descendant refuses the whole delete (guard is self-contained)", () => {
+    const s = mkStore();
+    s.upsertUser({ id: USER.id, address: USER.address });
+    mkCard(s, "root");
+    mkCard(s, "child", "root");
+    // kill ONLY the root (bypassing the cascade) · the child is still live
+    s.setCardStatus("root", "revoked");
+    expect(() => deleteDeadCard(s, "root", NOW)).toThrow(/subtree has a live card/);
+    expect(s.getCard("child")).not.toBeNull();
   });
 });

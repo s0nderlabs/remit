@@ -3,13 +3,14 @@
 // The card object, two-sided. Front = the essentials only (wordmark, ticking
 // chip, PAN, holder). The back is sparse and honest, like a real card: the
 // magstripe, a signature strip, two quiet facts, the brand line. No secrets
-// live on the card — the credential opens in the connect overlay, so the flip
-// is pure object delight. All on-card text lowercase. Physical states
-// preserved (active / frosted-frozen / stamped-dead).
+// live on the card · the credential opens in the connect overlay, so the flip
+// is pure object delight. Hovering a live card sets the silk band flowing.
+// Physical states are quiet now: frozen = frost + a corner tag, dead =
+// grayscale + a corner tag. No stamps.
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import type { CardState } from "@/lib/api";
-import { ChipDots, Guilloche, isDead, panGroups, shortHex } from "./ui";
+import { ChipDots, Guilloche, IconSnowflake, isDead, panGroups, shortHex } from "./ui";
 
 export function CardHero({
   card,
@@ -25,6 +26,7 @@ export function CardHero({
   onFlip: () => void;
 }) {
   const flipRef = useRef<HTMLDivElement>(null);
+  const [hover, setHover] = useState(false);
   const dead = isDead(card.status);
   const frozen = card.status === "frozen";
   const stateClass = dead ? "cardstate-dead" : frozen ? "cardstate-frozen" : "cardstate-active";
@@ -40,16 +42,22 @@ export function CardHero({
     el.style.transform = `rotateY(${x * 5}deg) rotateX(${-y * 5}deg)`;
   };
   const onLeave = () => {
+    setHover(false);
     if (flipRef.current && !flipped) flipRef.current.style.transform = "";
   };
   const flip = () => {
-    // the inline tilt transform would override the class flip — clear it first
+    // the inline tilt transform would override the class flip · clear it first
     if (flipRef.current) flipRef.current.style.transform = "";
     onFlip();
   };
 
   return (
-    <div className={`cardwrap ${stateClass}`} onMouseMove={onMove} onMouseLeave={onLeave}>
+    <div
+      className={`cardwrap ${stateClass}`}
+      onMouseMove={onMove}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={onLeave}
+    >
       <div className="cardbox">
         <div
           className={`cardflip${flipped ? " flipped" : ""}`}
@@ -60,11 +68,18 @@ export function CardHero({
         >
           <div className="card face front">
             <div className="band">
-              <Guilloche width={472} height={88} />
+              <Guilloche width={472} height={88} animate={hover && !dead && !frozen && !flipped} />
             </div>
             <div className="inner">
               <div className="row1">
                 <span className="wm">remit</span>
+                {frozen && (
+                  <span className="ctag frozen">
+                    <IconSnowflake size={10} />
+                    frozen
+                  </span>
+                )}
+                {dead && <span className="ctag dead">{card.status}</span>}
               </div>
               <ChipDots />
               <div className="num">
@@ -74,9 +89,7 @@ export function CardHero({
               </div>
               <div className="holderline">{holder ?? card.name}</div>
             </div>
-            <div className="frost">
-              <span className="stamp">frozen</span>
-            </div>
+            <div className="frost" />
           </div>
 
           <div className="card face back">
@@ -102,7 +115,6 @@ export function CardHero({
             </div>
           </div>
         </div>
-        <div className="rstamp">{dead ? card.status : "revoked"}</div>
       </div>
     </div>
   );

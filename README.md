@@ -99,7 +99,7 @@ Bun monorepo, three packages:
 packages/
   engine/     pure core: caveat compiler, issuance, spend, redelegation, revocation
   server/     Hono: REST API + MCP endpoint + x402 facilitator + demo seller + Stripe webhook
-  dashboard/  Next.js: Privy login, one-screen cockpit (card carousel + dossier), NL issue modal (client-signed), demo shop
+  dashboard/  Next.js: Privy login, one-screen cockpit (card deck + dossier, light/dark), NL issue modal (client-signed), demo shop
 ```
 
 Key pieces:

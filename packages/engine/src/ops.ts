@@ -71,6 +71,41 @@ export function unfreezeCard(store: Store, cardId: string): void {
   store.setCardStatus(cardId, "active");
 }
 
+/** Hard-delete a DEAD card (and its whole subtree) from the books. Pure bookkeeping:
+ * the authority is already unredeemable (revoked/nuked on-chain, or past expiry, which
+ * every spend re-checks). Live or frozen cards must be revoked first: deletion is not
+ * a kill switch, it removes the record of one. */
+export function deleteDeadCard(
+  store: Store,
+  cardId: string,
+  now: number = Math.floor(Date.now() / 1000),
+): { removed: number } {
+  const card = store.getCard(cardId);
+  if (!card) throw new RefusalError("card_not_found", "no such card");
+  // "expired" is derived at read time (the stored status stays active): re-derive it here
+  const isLive = (c: { status: string; terms: { expiry?: number } }) => {
+    const expired = c.terms.expiry !== undefined && now >= c.terms.expiry;
+    return !(c.status === "revoked" || c.status === "nuked" || expired);
+  };
+  if (isLive(card)) {
+    throw new RefusalError("invalid_terms", `card is ${card.status} · revoke it before deleting`, {
+      card_id: cardId,
+    });
+  }
+  // Self-contained guard: today revoke/nuke cascade status and the compiler clamps a
+  // child's expiry to its parent's, so a dead root implies a dead subtree. Don't TRUST
+  // that here: a live descendant must refuse the whole delete.
+  for (const id of store.subtreeIds(cardId)) {
+    const row = store.getCard(id);
+    if (row && isLive(row)) {
+      throw new RefusalError("invalid_terms", "subtree has a live card · revoke the tree before deleting", {
+        card_id: id,
+      });
+    }
+  }
+  return { removed: store.deleteCardTree(cardId) };
+}
+
 /** Agent-side sub-card revoke: FREEZE-GRADE kill (server stops carving, URL dies).
  * Descendants only: a card may never touch its siblings/ancestors. */
 export function agentRevokeSubcard(store: Store, requesterCardId: string, targetCardId: string): void {
@@ -252,18 +287,18 @@ export async function nukeAll(deps: OpsDeps, userId: string): Promise<AdminOpRes
 // ---------------------------------------------------------------------------
 // Client-signed admin ops (the Privy lane): the USER's embedded wallet signs the
 // admin leaf in the BROWSER, mirroring issuance's prepare/finalize split.
-//   prepare  — server builds the UNSIGNED admin leaf (delegator = A_user, delegate =
+//   prepare  · server builds the UNSIGNED admin leaf (delegator = A_user, delegate =
 //              the relayer target, FunctionCall scope pinned to the admin selector +
 //              the fee transfer). Sub-card revokes never reach here: their delegator
 //              is the parent's bare-EOA K_agent, so the user's signature can't disable
-//              them on-chain — they're killed server-side immediately.
-//   finalize — server verifies the signature recovers to A_user, then runs the SAME
+//              them on-chain · they're killed server-side immediately.
+//   finalize · server verifies the signature recovers to A_user, then runs the SAME
 //              estimate/send/confirm loop as the server-signed lane and applies the
 //              post-confirm bookkeeping (subtree status / nonce re-read).
 // SECURITY: the signed leaf is live, selector-scoped spend authority (admin call +
 // fee transfer) until redeemed. Holders of a PreparedAdminOp must keep it single-use
 // and short-TTL'd; the route layer consumes it via onValidated the moment the
-// signature verifies (before the relayer send — past that point it must never be
+// signature verifies (before the relayer send · past that point it must never be
 // re-finalizable).
 // ---------------------------------------------------------------------------
 
@@ -289,7 +324,7 @@ export type PrepareOpsDeps = {
 };
 
 /** Prepare a client-signed HARD REVOKE of a top-level card. For a sub-card this
- * performs the server-side kill immediately and returns { done: true } — there is
+ * performs the server-side kill immediately and returns { done: true } · there is
  * nothing for the user to sign (see REVOKE semantics at the top of this file). */
 export function prepareRevoke(
   deps: PrepareOpsDeps,
@@ -365,7 +400,7 @@ export async function finalizeAdminOp(
   prepared: PreparedAdminOp,
   signature: Hex,
   opts: {
-    /** called the moment the signature verifies — the holder of the prepared entry
+    /** called the moment the signature verifies · the holder of the prepared entry
      * must consume it here (single-use: past this point it may reach the relayer) */
     onValidated?: () => void;
   } = {},
@@ -375,7 +410,7 @@ export async function finalizeAdminOp(
   }
   const signedLeaf: WireDelegation = { ...prepared.delegation, signature };
   // The admin leaf is a ROOT-authority delegation from A_user, same EIP-712 domain as
-  // a root card — the issuance-lane recovery check applies unchanged.
+  // a root card · the issuance-lane recovery check applies unchanged.
   const recovers = await verifyRootDelegationSignature(signedLeaf, prepared.userAddress, prepared.chainId);
   if (!recovers) {
     throw new RefusalError("invalid_terms", "admin leaf signature does not recover to the account owner");
@@ -413,7 +448,7 @@ export async function finalizeAdminOp(
     return result;
   }
   // nuke bookkeeping: the tx CONFIRMED (runAdminLoop throws otherwise), so the tree is
-  // dead on-chain — mark it dead FIRST, then re-read the bumped nonce. An RPC blip on
+  // dead on-chain · mark it dead FIRST, then re-read the bumped nonce. An RPC blip on
   // the read must not leave the store claiming live cards for a dead tree; fall back to
   // stored+1 (our confirmed bump incremented exactly once).
   deps.store.setAllUserCardsStatus(prepared.userId, "nuked");

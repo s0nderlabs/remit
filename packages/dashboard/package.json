@@ -1,6 +1,6 @@
 {
   "name": "@remit/dashboard",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "scripts": {
     "dev": "next dev -p 4071",
@@ -12,6 +12,7 @@
     "@metamask/delegation-core": "^2.2.1",
     "@metamask/smart-accounts-kit": "1.6.0",
     "@privy-io/react-auth": "^3",
+    "motion": "^12.40.0",
     "next": "^16.2.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

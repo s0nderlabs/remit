@@ -6,6 +6,7 @@
 // we keep it silent in v1 per the locked UX). Base mainnet only.
 
 import { PrivyProvider } from "@privy-io/react-auth";
+import { MotionConfig } from "motion/react";
 import { base } from "viem/chains";
 import { PRIVY_APP_ID, PRIVY_CLIENT_ID } from "@/lib/chain";
 
@@ -25,7 +26,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
         appearance: { theme: "light", accentColor: "#1f6feb" },
       }}
     >
-      {children}
+      {/* motion respects the OS reduced-motion preference everywhere */}
+      <MotionConfig reducedMotion="user">{children}</MotionConfig>
     </PrivyProvider>
   );
 }

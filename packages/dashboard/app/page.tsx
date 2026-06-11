@@ -6,11 +6,13 @@
 // All v1 flows preserved (testids intact).
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { api, type TreeNode, type CardTermsInput, type CompileLabel, type CompileResult } from "@/lib/api";
 import { useRemit } from "./useRemit";
 import { Cockpit } from "./components/Shell";
 import { Dossier } from "./components/Dossier";
-import { ConnectChips } from "./components/Authority";
+import { ConnectChips, UrlBox } from "./components/Authority";
+import { Select } from "./components/Select";
 import type { FeedRow } from "./components/Activity";
 import { ChipDots, Guilloche, isDead, periodLabel, shortHex } from "./components/ui";
 
@@ -28,7 +30,7 @@ export default function Home() {
   const prevDidRef = useRef<string | undefined>(undefined);
 
   // Re-arm onboarding whenever the Privy identity changes (logout, or switching to a
-  // different account in the SAME tab — the Home component instance and its state
+  // different account in the SAME tab · the Home component instance and its state
   // persist across login transitions, so stale onboarded=true would otherwise gate the
   // new DID out and every /api call would 403 in a loop). Runs before the onboard effect.
   useEffect(() => {
@@ -42,7 +44,7 @@ export default function Home() {
   }, [did]);
 
   // Returning-user fast path: if a cheap authed read succeeds, the server already
-  // knows this wallet — skip the 7702 + proof ceremony (and its interstitial)
+  // knows this wallet · skip the 7702 + proof ceremony (and its interstitial)
   // entirely. Only when the probe fails (server doesn't know the wallet yet) does
   // the full onboard run below.
   useEffect(() => {
@@ -53,7 +55,7 @@ export default function Home() {
         await api.cards();
         if (live) setOnboarded(true);
       } catch {
-        // unknown wallet (or transient failure) — fall through to the ceremony
+        // unknown wallet (or transient failure) · fall through to the ceremony
       } finally {
         if (live) setProbed(true);
       }
@@ -209,7 +211,7 @@ function Dashboard({
     : "";
 
   // When the HERO itself changes (carousel selection, revoke/nuke demotes it, or
-  // a new root takes over), drop the old hero's feed immediately — never show the
+  // a new root takes over), drop the old hero's feed immediately · never show the
   // previous card's spend and delegate attributed to the new one while the load runs.
   useEffect(() => {
     setFeed([]);
@@ -248,7 +250,7 @@ function Dashboard({
     };
   }, [idsKey]);
 
-  // first-run: no cards yet — the modal IS the front door
+  // first-run: no cards yet · the modal IS the front door
   const modalOpen = issueOpen || (loaded && tree.length === 0);
 
   return (
@@ -276,22 +278,30 @@ function Dashboard({
         currentId={heroId || null}
         onSelect={setSelId}
         onIssue={() => setIssueOpen(true)}
+        onDeleted={() => {
+          // the selection must not keep pointing at a deleted card
+          setSelId(null);
+          return refresh();
+        }}
       />
 
-      {modalOpen && (
-        <IssueModal
-          remit={remit}
-          address={address}
-          firstCard={tree.length === 0}
-          onIssued={() => {
-            // refresh fills the tree; pin the modal open so the first-run path
-            // doesn't unmount it before the URL handoff is read
-            setIssueOpen(true);
-            return refresh();
-          }}
-          onClose={tree.length > 0 ? () => setIssueOpen(false) : undefined}
-        />
-      )}
+      <AnimatePresence>
+        {modalOpen && (
+          <IssueModal
+            key="issue"
+            remit={remit}
+            address={address}
+            firstCard={tree.length === 0}
+            onIssued={() => {
+              // refresh fills the tree; pin the modal open so the first-run path
+              // doesn't unmount it before the URL handoff is read
+              setIssueOpen(true);
+              return refresh();
+            }}
+            onClose={tree.length > 0 ? () => setIssueOpen(false) : undefined}
+          />
+        )}
+      </AnimatePresence>
     </Cockpit>
   );
 }
@@ -312,7 +322,7 @@ const splitList = (s: string) =>
     .split(/[,\n]/)
     .map((x) => x.trim())
     .filter(Boolean);
-/** split a comma list, but never inside parentheses — method signatures carry commas */
+/** split a comma list, but never inside parentheses · method signatures carry commas */
 const splitSelectors = (s: string): string[] => {
   const out: string[] = [];
   let depth = 0;
@@ -418,7 +428,7 @@ function IssueModal({
     };
   }
 
-  /** prefill every field from a compiled draft — the user still reviews + signs */
+  /** prefill every field from a compiled draft · the user still reviews + signs */
   function applyDraft(r: CompileResult) {
     const d = r.draft;
     if (!d) return;
@@ -533,13 +543,24 @@ function IssueModal({
   );
 
   return (
-    <div
+    <motion.div
       className="mscrim"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0, transition: { duration: 0.18 } }}
       onClick={(e) => {
         if (e.target === e.currentTarget && onClose) onClose();
       }}
     >
-      <div className="modal" role="dialog" aria-modal="true" aria-label="issue a new card">
+      <motion.div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="issue a new card"
+        initial={{ opacity: 0, y: 26, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1, transition: { type: "spring", stiffness: 360, damping: 30 } }}
+        exit={{ opacity: 0, y: 14, scale: 0.98, transition: { duration: 0.16 } }}
+      >
         <div className="mhead">
           <div>
             <div className="mtitle">{firstCard ? "issue your first card" : "issue a new card"}</div>
@@ -557,12 +578,8 @@ function IssueModal({
             <div className="ok" style={{ marginBottom: 8 }}>
               card issued · hand this url to your agent (it is the credential):
             </div>
-            <div className="urlbox" data-testid="issued-url">
-              {issuedUrl}
-            </div>
-            <div style={{ marginTop: 14 }}>
-              <ConnectChips url={issuedUrl} cardName={name} />
-            </div>
+            <UrlBox url={issuedUrl} testid="issued-url" />
+            <ConnectChips url={issuedUrl} cardName={name} />
             <div className="mfoot">
               <button className="dbtn" onClick={() => onClose?.()}>
                 done
@@ -577,6 +594,7 @@ function IssueModal({
               maxLength={2000}
               // the modal's first focusable thing: keyboard users land here, not behind the scrim
               autoFocus
+              disabled={compiling}
               placeholder='describe the card · "$5 a week for research apis, any merchant, expires in 30 days"'
               onChange={(e) => setIntent(e.target.value)}
               onKeyDown={(e) => {
@@ -584,14 +602,24 @@ function IssueModal({
               }}
               data-testid="compile-intent"
             />
+            {compiling && (
+              <div className="draftbar" role="progressbar" aria-label="venice is drafting">
+                <i />
+              </div>
+            )}
             <div className="drow">
-              <span className="mhint">venice drafts · you review the compiled terms before anything is signed</span>
+              <span className="mhint">
+                {compiling
+                  ? "venice is reading your intent · compiling it to on-chain terms…"
+                  : "venice drafts · you review the compiled terms before anything is signed"}
+              </span>
               <button
-                className={`dbtn${drafted ? " quiet" : ""}`}
+                className={`dbtn${drafted && !compiling ? " quiet" : ""}`}
                 onClick={compile}
                 disabled={compiling || !intent.trim()}
                 data-testid="compile-go"
               >
+                {compiling && <span className="bspin" aria-hidden />}
                 {compiling ? "drafting…" : "draft terms"}
               </button>
             </div>
@@ -612,7 +640,8 @@ function IssueModal({
                 <div className="mc-name">{name || "agent card"}</div>
                 <div className="mc-cap num">{capLine}</div>
                 <div className="mc-band">
-                  <Guilloche width={520} height={64} strands={9} amp={14} />
+                  {/* the silk flows while the draft materializes · the card coming alive */}
+                  <Guilloche width={520} height={64} strands={9} amp={14} animate={filled || compiling} />
                 </div>
               </div>
               {filled && <TermChips key={`${draftN}-${editOpen}`} items={chips} />}
@@ -628,11 +657,20 @@ function IssueModal({
                 </div>
               )}
               {warnings.length > 0 && (
-                <ul className="warnlist" data-testid="compile-warnings">
-                  {warnings.map((w, i) => (
-                    <li key={i}>{w}</li>
-                  ))}
-                </ul>
+                <div className="vnotes" data-testid="compile-warnings">
+                  <div className="vh">
+                    <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden>
+                      <path d="M6 1.2 11 10H1z" strokeLinejoin="round" />
+                      <path d="M6 4.6v2.6M6 8.9v.1" />
+                    </svg>
+                    venice adjusted the draft · review before signing
+                  </div>
+                  <ul>
+                    {warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                </div>
               )}
               {drafted && (
                 <p className="cbnote">addresses resolve from a verified registry or your own text · the model never supplies them</p>
@@ -645,75 +683,91 @@ function IssueModal({
 
             {editOpen && (
               <div className={`composer2${draftN ? " flash" : ""}`} key={draftN}>
-                <div className="crow">
-                  <span className="cgroup">card</span>
-                  {field("name", <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: 150 }} data-testid="composer-name" />)}
-                  {field(
-                    "expires · days",
-                    <input type="number" value={expiryDays} onChange={(e) => setExpiryDays(Number(e.target.value))} style={{ width: 72 }} />,
-                  )}
-                  {field(
-                    "max uses",
-                    <input value={maxUses} onChange={(e) => setMaxUses(e.target.value)} placeholder="∞" style={{ width: 72 }} data-testid="composer-maxuses" />,
-                  )}
-                  {field(
-                    "sub-cards",
-                    <select value={subcards ? "yes" : "no"} onChange={(e) => setSubcards(e.target.value === "yes")}>
-                      <option value="yes">allowed</option>
-                      <option value="no">no</option>
-                    </select>,
-                  )}
+                <div className="csec">
+                  <div className="cseclbl">card</div>
+                  <div className="csecrow">
+                    {field("name", <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: 150 }} data-testid="composer-name" />)}
+                    {field(
+                      "expires · days",
+                      <input type="number" value={expiryDays} onChange={(e) => setExpiryDays(Number(e.target.value))} style={{ width: 72 }} />,
+                    )}
+                    {field(
+                      "max uses",
+                      <input value={maxUses} onChange={(e) => setMaxUses(e.target.value)} placeholder="∞" style={{ width: 72 }} data-testid="composer-maxuses" />,
+                    )}
+                    {field(
+                      "sub-cards",
+                      <Select
+                        value={subcards ? "yes" : "no"}
+                        options={[
+                          { value: "yes", label: "allowed" },
+                          { value: "no", label: "no" },
+                        ]}
+                        onChange={(v) => setSubcards(v === "yes")}
+                        width={104}
+                      />,
+                    )}
+                  </div>
                 </div>
 
-                <div className="crow">
-                  <span className="cgroup">pay · usdc</span>
-                  {field(
-                    "budget",
-                    <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-amount" />,
-                  )}
-                  {field(
-                    "per",
-                    <select value={period} onChange={(e) => setPeriod(Number(e.target.value))}>
-                      <option value={86400}>day</option>
-                      <option value={604800}>week</option>
-                      <option value={2592000}>30 days</option>
-                    </select>,
-                  )}
-                  {field(
-                    "lifetime cap",
-                    <input value={lifetime} onChange={(e) => setLifetime(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-lifetime" />,
-                  )}
-                  {field("per-charge max", <input value={perTx} onChange={(e) => setPerTx(e.target.value)} placeholder="none" style={{ width: 92 }} />)}
-                  {field(
-                    "merchant lock",
-                    <input value={merchants} onChange={(e) => setMerchants(e.target.value)} placeholder="0x…, 0x…" style={{ width: 170 }} />,
-                  )}
+                <div className="csec">
+                  <div className="cseclbl">pay · usdc</div>
+                  <div className="csecrow">
+                    {field(
+                      "budget",
+                      <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-amount" />,
+                    )}
+                    {field(
+                      "per",
+                      <Select
+                        value={String(period)}
+                        options={[
+                          { value: "86400", label: "day" },
+                          { value: "604800", label: "week" },
+                          { value: "2592000", label: "30 days" },
+                        ]}
+                        onChange={(v) => setPeriod(Number(v))}
+                        width={104}
+                      />,
+                    )}
+                    {field(
+                      "lifetime cap",
+                      <input value={lifetime} onChange={(e) => setLifetime(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-lifetime" />,
+                    )}
+                    {field("per-charge max", <input value={perTx} onChange={(e) => setPerTx(e.target.value)} placeholder="none" style={{ width: 92 }} />)}
+                    {field(
+                      "merchant lock",
+                      <input value={merchants} onChange={(e) => setMerchants(e.target.value)} placeholder="0x…, 0x…" style={{ width: 170 }} />,
+                    )}
+                  </div>
                 </div>
 
-                <div className="crow">
-                  <span className="cgroup">execute · contracts</span>
-                  {field(
-                    "contracts",
-                    <input className="wide" value={targets} onChange={(e) => setTargets(e.target.value)} placeholder="0x…, 0x…" data-testid="composer-targets" />,
-                  )}
-                  {field(
-                    "methods",
-                    <input
-                      className="wide"
-                      value={selectors}
-                      onChange={(e) => setSelectors(e.target.value)}
-                      placeholder="approve(address,uint256), …"
-                      data-testid="composer-selectors"
-                    />,
-                  )}
-                  {field(
-                    "tokens · allowance",
-                    <input value={tokens} onChange={(e) => setTokens(e.target.value)} placeholder="0x… · optional" style={{ width: 136 }} data-testid="composer-tokens" />,
-                  )}
-                  {field(
-                    "per-trade max",
-                    <input value={perTrade} onChange={(e) => setPerTrade(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-pertrademax" />,
-                  )}
+                <div className="csec">
+                  <div className="cseclbl">execute · contracts</div>
+                  <div className="csecrow">
+                    {field(
+                      "contracts",
+                      <input className="wide" value={targets} onChange={(e) => setTargets(e.target.value)} placeholder="0x…, 0x…" data-testid="composer-targets" />,
+                    )}
+                    {field(
+                      "methods",
+                      <input
+                        className="wide"
+                        value={selectors}
+                        onChange={(e) => setSelectors(e.target.value)}
+                        placeholder="approve(address,uint256), …"
+                        data-testid="composer-selectors"
+                      />,
+                    )}
+                    {field(
+                      "tokens · allowance",
+                      <input value={tokens} onChange={(e) => setTokens(e.target.value)} placeholder="0x… · optional" style={{ width: 136 }} data-testid="composer-tokens" />,
+                    )}
+                    {field(
+                      "per-trade max",
+                      <input value={perTrade} onChange={(e) => setPerTrade(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-pertrademax" />,
+                    )}
+                  </div>
                 </div>
                 <p className="chint">leave pay empty for an execute-only card · leave contracts empty for a pay-only card</p>
               </div>
@@ -737,12 +791,12 @@ function IssueModal({
             </div>
           </>
         )}
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
-// chips stagger in as the draft lands — mount with .in applied a frame later
+// chips stagger in as the draft lands · mount with .in applied a frame later
 function TermChips({ items }: { items: string[] }) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
