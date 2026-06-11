@@ -122,9 +122,13 @@ function parse(result: { content?: unknown }): Record<string, unknown> {
   return JSON.parse(content[0]!.text);
 }
 
+/** Flatten every transaction item's executions in redemption order. Contract-mode
+ * redemptions now split allowance calls into their own pinned items (#42), so the
+ * physical execution list spans multiple items; the agent-visible ordering is the
+ * concatenation. */
 function lastExecutions(): Array<{ target: string; value: string; data: string }> {
-  const tx = relayer.sends[relayer.sends.length - 1]![0]!;
-  return tx.executions as unknown as Array<{ target: string; value: string; data: string }>;
+  const items = relayer.sends[relayer.sends.length - 1]!;
+  return items.flatMap((tx) => tx.executions) as unknown as Array<{ target: string; value: string; data: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,15 +136,16 @@ function lastExecutions(): Array<{ target: string; value: string; data: string }
 // ---------------------------------------------------------------------------
 
 describe("execute: encoded calldata", () => {
-  test("single approve: exact calldata, fee leg appended, chain-2 context", async () => {
+  test("single approve: pinned item, fee in its own item, chain-2 context", async () => {
+    // realistic swap-card shape: scope the token + the spender (the router)
     const { secret } = await issue({
-      contract: { targets: [ROUTER], selectors: ["approve(address,uint256)"] },
+      contract: { targets: [USDC, SPENDER], selectors: ["approve(address,uint256)"] },
     });
     const client = await connect(`${base}/c/${secret}/mcp`);
     const r = parse(
       await client.callTool({
         name: "execute",
-        arguments: { calls: [{ target: ROUTER, method: "approve(address,uint256)", args: [SPENDER, "1000000"] }] },
+        arguments: { calls: [{ target: USDC, method: "approve(address,uint256)", args: [SPENDER, "1000000"] }] },
       }),
     );
     expect(r.status).toBe("confirmed");
@@ -148,17 +153,17 @@ describe("execute: encoded calldata", () => {
     expect(r.amount).toBe("0"); // contract mode moves no USDC of its own
     expect(r.fee).toBe("0.01");
 
-    const ex = lastExecutions();
-    expect(ex.length).toBe(2); // work call + fee leg
-    expect(ex[0]!.target.toLowerCase()).toBe(ROUTER.toLowerCase());
-    expect(ex[0]!.value).toBe("0");
-    expect(ex[0]!.data).toBe(calldata("approve(address,uint256)", [SPENDER, "1000000"]));
-    // fee leg: USDC.transfer -> FEE_COLLECTOR
-    expect(ex[1]!.target.toLowerCase()).toBe(USDC.toLowerCase());
-    expect(ex[1]!.data).toBe(calldata(TRANSFER_SIG, [FEE_COLLECTOR, "10000"]));
-
-    const ctx = relayer.sends[relayer.sends.length - 1]![0]!.permissionContext;
-    expect(ctx.length).toBe(2); // [leaf, root]
+    // the approve is isolated in item 0 behind exact-spender + exact-amount pins; the
+    // fee leg gets its own item (a pinned item must hold ONLY its allowance execution)
+    const items = relayer.sends[relayer.sends.length - 1]!;
+    expect(items.length).toBe(2);
+    expect(items[0]!.executions.length).toBe(1);
+    expect((items[0]!.executions[0]! as { data: string }).data).toBe(calldata("approve(address,uint256)", [SPENDER, "1000000"]));
+    expect(items[1]!.executions.length).toBe(1);
+    expect((items[1]!.executions[0]! as { target: string }).target.toLowerCase()).toBe(USDC.toLowerCase()); // fee leg
+    expect((items[1]!.executions[0]! as { data: string }).data).toBe(calldata(TRANSFER_SIG, [FEE_COLLECTOR, "10000"]));
+    // each item rides [leaf, root]
+    expect(items[0]!.permissionContext.length).toBe(2);
     await client.close();
   });
 
@@ -185,12 +190,17 @@ describe("execute: encoded calldata", () => {
     expect(r.status).toBe("confirmed");
     expect(r.memo).toBe("stake leg");
 
+    // approve (spender POOL, in scope) isolates into a pinned item; supply + fee ride
+    // the second item. Flattened agent-order is still approve, supply, fee.
     const ex = lastExecutions();
     expect(ex.length).toBe(3); // approve, supply, fee leg
     expect(ex[0]!.data).toBe(calldata("approve(address,uint256)", [POOL, "500000"]));
     expect(ex[1]!.target.toLowerCase()).toBe(POOL.toLowerCase());
     expect(ex[1]!.data).toBe(calldata("supply(address,uint256,address,uint16)", [USDC, "500000", user.address, 0]));
     expect(ex[2]!.target.toLowerCase()).toBe(USDC.toLowerCase()); // fee leg
+    const items = relayer.sends[relayer.sends.length - 1]!;
+    expect(items.length).toBe(2); // [pinned approve] + [supply, fee]
+    expect(items[0]!.executions.length).toBe(1);
     await client.close();
   });
 
@@ -255,11 +265,11 @@ describe("execute: typed refusals", () => {
   });
 
   test("maxUses exhausts across redemptions -> uses_exhausted", async () => {
-    const { secret } = await issue({ contract: { targets: [ROUTER], selectors: ["approve(address,uint256)"] }, maxUses: 1 });
+    const { secret } = await issue({ contract: { targets: [USDC, SPENDER], selectors: ["approve(address,uint256)"] }, maxUses: 1 });
     const client = await connect(`${base}/c/${secret}/mcp`);
-    const ok = parse(await client.callTool({ name: "execute", arguments: { calls: [{ target: ROUTER, method: "approve(address,uint256)", args: [SPENDER, "1"] }] } }));
+    const ok = parse(await client.callTool({ name: "execute", arguments: { calls: [{ target: USDC, method: "approve(address,uint256)", args: [SPENDER, "1"] }] } }));
     expect(ok.status).toBe("confirmed");
-    const res = await client.callTool({ name: "execute", arguments: { calls: [{ target: ROUTER, method: "approve(address,uint256)", args: [SPENDER, "1"] }] } });
+    const res = await client.callTool({ name: "execute", arguments: { calls: [{ target: USDC, method: "approve(address,uint256)", args: [SPENDER, "1"] }] } });
     expect(res.isError).toBe(true);
     expect(parse(res).code).toBe("uses_exhausted");
     await client.close();
@@ -289,18 +299,18 @@ describe("execute: typed refusals", () => {
 
 describe("execute: lanes + idempotency", () => {
   test("Bearer header lane executes identically to path-secret lane", async () => {
-    const { secret } = await issue({ contract: { targets: [ROUTER], selectors: ["approve(address,uint256)"] } });
+    const { secret } = await issue({ contract: { targets: [USDC, SPENDER], selectors: ["approve(address,uint256)"] } });
     const client = await connect(`${base}/mcp`, { authorization: `Bearer ${secret}` });
-    const r = parse(await client.callTool({ name: "execute", arguments: { calls: [{ target: ROUTER, method: "approve(address,uint256)", args: [SPENDER, "7"] }] } }));
+    const r = parse(await client.callTool({ name: "execute", arguments: { calls: [{ target: USDC, method: "approve(address,uint256)", args: [SPENDER, "7"] }] } }));
     expect(r.status).toBe("confirmed");
     expect(lastExecutions()[0]!.data).toBe(calldata("approve(address,uint256)", [SPENDER, "7"]));
     await client.close();
   });
 
   test("idempotency_key replays the same receipt without a second send", async () => {
-    const { secret } = await issue({ contract: { targets: [ROUTER], selectors: ["approve(address,uint256)"] } });
+    const { secret } = await issue({ contract: { targets: [USDC, SPENDER], selectors: ["approve(address,uint256)"] } });
     const client = await connect(`${base}/c/${secret}/mcp`);
-    const args = { calls: [{ target: ROUTER, method: "approve(address,uint256)", args: [SPENDER, "3"] }], idempotency_key: "exec-k1" };
+    const args = { calls: [{ target: USDC, method: "approve(address,uint256)", args: [SPENDER, "3"] }], idempotency_key: "exec-k1" };
     const r1 = parse(await client.callTool({ name: "execute", arguments: args }));
     const before = relayer.sends.length;
     const r2 = parse(await client.callTool({ name: "execute", arguments: args }));
@@ -318,7 +328,7 @@ describe("execute: composite (pay + contract)", () => {
   test("composite card exposes pay AND execute; both redeem off the OR-wrapper", async () => {
     const { secret } = await issue({
       pay: { period: { amount: "10", seconds: 604800 } },
-      contract: { targets: [ROUTER], selectors: ["approve(address,uint256)"] },
+      contract: { targets: [USDC, SPENDER], selectors: ["approve(address,uint256)"] },
     }, "composite");
     const client = await connect(`${base}/c/${secret}/mcp`);
     const names = (await client.listTools()).tools.map((t) => t.name);
@@ -326,7 +336,7 @@ describe("execute: composite (pay + contract)", () => {
     expect(names).toContain("execute");
 
     // contract leg
-    const ex = parse(await client.callTool({ name: "execute", arguments: { calls: [{ target: ROUTER, method: "approve(address,uint256)", args: [SPENDER, "1"] }] } }));
+    const ex = parse(await client.callTool({ name: "execute", arguments: { calls: [{ target: USDC, method: "approve(address,uint256)", args: [SPENDER, "1"] }] } }));
     expect(ex.status).toBe("confirmed");
     // pay leg off the SAME card
     const pay = parse(await client.callTool({ name: "pay", arguments: { to: SPENDER, amount: "1" } }));
@@ -453,20 +463,21 @@ describe("execute: scope-escape is closed", () => {
 describe("execute: contract sub-cards", () => {
   test("narrow a contract sub-card (subset), it gets execute, redeems chain-3", async () => {
     const { secret } = await issue({
-      contract: { targets: [ROUTER, POOL], selectors: ["approve(address,uint256)", "supply(address,uint256,address,uint16)"] },
+      contract: { targets: [USDC, SPENDER, POOL], selectors: ["approve(address,uint256)", "supply(address,uint256,address,uint16)"] },
     }, "lead-contract");
     const lead = await connect(`${base}/c/${secret}/mcp`);
     const minted = parse(await lead.callTool({
       name: "issue_subcard",
-      arguments: { name: "swap-sub", terms: { contract: { targets: [ROUTER], selectors: ["approve(address,uint256)"] } } },
+      arguments: { name: "swap-sub", terms: { contract: { targets: [USDC, SPENDER], selectors: ["approve(address,uint256)"] } } },
     }));
     expect(minted.card_url).toContain("/c/");
 
     const sub = await connect(minted.card_url as string);
     expect((await sub.listTools()).tools.map((t) => t.name)).toContain("execute");
-    const r = parse(await sub.callTool({ name: "execute", arguments: { calls: [{ target: ROUTER, method: "approve(address,uint256)", args: [SPENDER, "1"] }] } }));
+    const r = parse(await sub.callTool({ name: "execute", arguments: { calls: [{ target: USDC, method: "approve(address,uint256)", args: [SPENDER, "1"] }] } }));
     expect(r.status).toBe("confirmed");
-    expect(relayer.sends[relayer.sends.length - 1]![0]!.permissionContext.length).toBe(3); // [leaf, child, root]
+    // item 0 = the pinned approve, riding the chain-3 context [leaf, child, root]
+    expect(relayer.sends[relayer.sends.length - 1]![0]!.permissionContext.length).toBe(3);
     await sub.close();
     await lead.close();
   });
@@ -496,6 +507,102 @@ describe("execute: contract sub-cards", () => {
     const body = parse(res);
     expect(body.code).toBe("exceeds_parent_terms");
     expect((body.detail as { field: string }).field).toBe("contract.selectors");
+    await lead.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #42: token list + perTradeMax over the live MCP socket
+// ---------------------------------------------------------------------------
+
+describe("execute: allowance token list + perTradeMax (server surface)", () => {
+  const swapSig = EXACT_INPUT_SINGLE_SIG;
+  const rawSwap = encodeFunctionData({
+    abi: parseAbi([`function ${swapSig}`]),
+    functionName: "exactInputSingle",
+    args: [{ tokenIn: USDC, tokenOut: WETH, fee: 500, recipient: user.address, amountIn: 20000n, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n }] as never,
+  });
+
+  async function call(secret: string, args: unknown) {
+    const client = await connect(`${base}/c/${secret}/mcp`);
+    const res = await client.callTool({ name: "execute", arguments: args as never });
+    await client.close();
+    return res;
+  }
+
+  test("tokens unioned into scope at issue: a token-list card can approve + swap", async () => {
+    // declare ROUTER + swap; tokens [USDC] unions USDC target + approve selector
+    const { secret } = await issue(
+      { contract: { targets: [ROUTER], selectors: [swapSig], tokens: [USDC], perTradeMax: "0.05" } },
+      "swap-tokenlist",
+    );
+    const r = parse(await call(secret, {
+      calls: [
+        { target: USDC, method: "approve(address,uint256)", args: [ROUTER, "20000"] },
+        { target: ROUTER, data: rawSwap },
+      ],
+    }));
+    expect(r.status).toBe("confirmed");
+    const items = relayer.sends[relayer.sends.length - 1]!;
+    expect(items.length).toBe(2); // [pinned approve] + [swap, fee]
+    // pin amount is exactly 20000
+    const pinned = items[0]!.permissionContext[0]!.caveats.filter((c) => c.terms.length === 130);
+    expect(pinned.some((c) => BigInt("0x" + c.terms.slice(-64)) === 20000n)).toBe(true);
+  });
+
+  test("approve of a token off the list -> token_not_allowed", async () => {
+    // WETH callable (declared target) but not on the allowance token list
+    const { secret } = await issue(
+      { contract: { targets: [ROUTER, WETH], selectors: [swapSig], tokens: [USDC] } },
+      "tokenlist-deny",
+    );
+    const res = await call(secret, { calls: [{ target: WETH, method: "approve(address,uint256)", args: [ROUTER, "1"] }] });
+    expect(res.isError).toBe(true);
+    expect(parse(res).code).toBe("token_not_allowed");
+  });
+
+  test("USDC approve over perTradeMax -> per_trade_exceeded; at cap confirms", async () => {
+    const { secret } = await issue(
+      { contract: { targets: [ROUTER], selectors: [swapSig], tokens: [USDC], perTradeMax: "0.05" } },
+      "pertrade",
+    );
+    const over = await call(secret, { calls: [{ target: USDC, method: "approve(address,uint256)", args: [ROUTER, "50001"] }] });
+    expect(over.isError).toBe(true);
+    expect(parse(over).code).toBe("per_trade_exceeded");
+    const ok = parse(await call(secret, { calls: [{ target: USDC, method: "approve(address,uint256)", args: [ROUTER, "50000"] }] }));
+    expect(ok.status).toBe("confirmed");
+  });
+
+  test("spender outside scope -> spender_not_allowed", async () => {
+    const { secret } = await issue(
+      { contract: { targets: [USDC], selectors: ["approve(address,uint256)"], tokens: [USDC] } },
+      "spender-deny",
+    );
+    const res = await call(secret, { calls: [{ target: USDC, method: "approve(address,uint256)", args: [POOL, "1"] }] });
+    expect(res.isError).toBe(true);
+    expect(parse(res).code).toBe("spender_not_allowed");
+  });
+
+  test("sub-card token list must be a subset of parent's", async () => {
+    // parent: WETH is a callable target (approve in scope) but NOT an allowance token;
+    // only USDC is. So a child asking to add WETH to its token list is a tokens
+    // violation even though WETH is a legal target.
+    const { secret } = await issue(
+      { contract: { targets: [ROUTER, WETH], selectors: [swapSig, "approve(address,uint256)"], tokens: [USDC] } },
+      "tokenlist-lead",
+    );
+    const lead = await connect(`${base}/c/${secret}/mcp`);
+    const denied = await lead.callTool({
+      name: "issue_subcard",
+      arguments: { name: "fat-tokens", terms: { contract: { targets: [ROUTER, WETH], selectors: [swapSig, "approve(address,uint256)"], tokens: [WETH] } } },
+    });
+    expect(denied.isError).toBe(true);
+    expect((parse(denied).detail as { field: string }).field).toBe("contract.tokens");
+    const ok = parse(await lead.callTool({
+      name: "issue_subcard",
+      arguments: { name: "subset-tokens", terms: { contract: { targets: [ROUTER], selectors: [swapSig], tokens: [USDC] } } },
+    }));
+    expect(ok.card_url).toContain("/c/");
     await lead.close();
   });
 });

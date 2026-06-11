@@ -2,6 +2,29 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.6.0] - 2026-06-11
+
+Three tracks land together: the Venice natural-language card compiler, advanced contract caveats (allowance tokens + a per-trade ceiling), and the dashboard catching up to everything the engine can do. Shipped through a 3-reviewer pre-release pass (13 findings fixed, 1 accepted as-is).
+
+### Added
+
+- **Venice NL-to-card-terms compiler** (`POST /cards/compile` + the dashboard "Draft terms" box): describe the card in plain language and a draft prefills the composer. The model only ever names entities (tokens, protocols, merchants) and numbers; every address is resolved server-side from a verified registry, so model output cannot place an address into a draft. Unresolvable or inexpressible clauses come back as warnings, and the user still reviews and signs through the normal issuance flow.
+- **Allowance tokens + per-trade ceiling on contract cards**: a contract card can declare which tokens it may grant allowances for (`contract.tokens`) and a USDC per-trade cap (`contract.perTradeMax`). Approvals outside the token list or above the cap refuse before anything reaches the chain; approve calldata stays exact-amount pinned on-chain. Sub-cards keep tokens subset-only and caps tightest-governs. Validated live with a pinned approve+swap on Base mainnet.
+- **Dashboard capability wiring**: the composer exposes the full card surface (max uses, lifetime, contract targets/methods/tokens/per-trade max) as spec-sheet rows; connect moved into an overlay (the card flip stays as object delight); the terms grid derives from the card's real lanes; activity rows attribute charges per card.
+
+### Changed
+
+- Dashboard re-render ("Porcelain"): everything sits on white panels over a tinted canvas, floating pill navbar, mini-card rack under the hero card, zero uppercase anywhere, mono reserved for hex and credentials.
+
+### Fixed
+
+- A per-trade cap on a non-USDC sell leg (which v1 cannot enforce) is dropped from compiled drafts with a warning instead of rendering as a live ceiling; the dashboard headline only presents the cap when the card can actually grant a USDC allowance, and the terms grid marks unenforceable caps as dormant.
+- Malformed money amounts (non-numeric, more than 6 decimals) in any terms field refuse with a typed 422 instead of surfacing as a 500.
+- The Venice client times out (20s) instead of hanging `/cards/compile` on a silent upstream, and the basescan lookup gets the same guard (8s). JSON extraction from model replies is brace-balance aware so prose braces can't poison the parse, and a garbled per-trade value can never win the tightest-cap selection.
+- The composer refuses a token allowance entered without a contract scope instead of silently dropping it from the signed terms.
+- The delegation-terms header counts honestly ("N terms on this card" instead of claiming every term is enforced on-chain).
+- Sub-cards no longer inherit a per-trade cap they can never trigger (no approve in their scope); the fee leg reuses the shared `feeExecution` helper; dead CSS rules, dead exports, and test scaffolding cleaned up.
+
 ## [0.5.0] - 2026-06-08
 
 The contract lane: a card can scope an agent to specific contract calls (swaps, staking, mints), not just USDC payments.

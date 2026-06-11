@@ -125,11 +125,13 @@ export function buildChildDelegation(args: {
 }
 
 /** Leaf carve for a spend: delegate MUST be the relayer targetAddress. Scope from
- * compiler.payLeafScope / contractLeafScope. */
+ * compiler.payLeafScope / contractLeafScope. extraCaveats append to the scope's set
+ * (e.g. AllowedCalldata approve pins); the SDK merges both into the signed caveat array. */
 export function carveLeafDelegation(args: {
   parent: WireDelegation;
   from: Address; // the card's K_agent address
   scope: Parameters<typeof createDelegation>[0]["scope"];
+  extraCaveats?: WireCaveat[];
   salt?: Hex;
   chainId?: ChainId;
 }): WireDelegation {
@@ -140,6 +142,7 @@ export function carveLeafDelegation(args: {
     to: CHAINS[chainId].targetAddress,
     parentDelegation: args.parent as never,
     scope: args.scope,
+    ...(args.extraCaveats?.length ? { caveats: args.extraCaveats as never } : {}),
     salt: args.salt ?? freshSalt(),
   });
   return wireDelegation(leaf);

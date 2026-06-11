@@ -19,6 +19,14 @@ export type ContractTerms = {
   targets: Address[];
   /** Allowed method signatures, human-readable ("approve(address,uint256)"). transfer() unioned in. */
   selectors: string[];
+  /** Tokens this card may grant ERC-20 allowances on (approve / increaseAllowance).
+   * When present, allowance calls must target a listed token; listed tokens are
+   * unioned into targets (+ approve into selectors) at validation. Every allowance
+   * call is also pinned on-chain (exact spender + amount) regardless of this list. */
+  tokens?: Address[];
+  /** Per-allowance ceiling on USDC approvals (USDC decimal string). v1 caps the
+   * settlement token only; non-USDC allowances still get exact-amount pins. */
+  perTradeMax?: string;
 };
 
 export type CardTerms = {

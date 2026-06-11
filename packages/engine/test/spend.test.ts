@@ -13,8 +13,10 @@ import { freezeCard, unfreezeCard, agentRevokeSubcard } from "../src/ops";
 import { RefusalError } from "../src/errors";
 import { hashCardSecret } from "../src/custody";
 import type { Relayer, RelayerTransaction, EstimateResult } from "../src/relayer";
-import type { Wire7702Auth } from "../src/types";
+import type { CardTerms, Wire7702Auth, WireExecution } from "../src/types";
 import { CHAINS } from "../src/chains";
+import { erc20ApproveExecution } from "../src/delegations";
+import { getSmartAccountsEnvironment } from "@metamask/smart-accounts-kit";
 
 const NOW = 1_780_000_000;
 const MERCHANT = "0xAc36D18d2315c8c1F6e93B9074D3C25e2DC14127" as Address;
@@ -530,5 +532,173 @@ describe("hardening", () => {
     expect(outcomes.filter((s) => s === "rejected").length).toBe(1);
     const rejected = [a, b].find((r) => r.status === "rejected") as PromiseRejectedResult;
     expect((rejected.reason as { code: string }).code).toBe("over_period_limit");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #42: contract-mode allowance gates + multi-item pinning (FakeRelayer captures)
+// ---------------------------------------------------------------------------
+
+describe("execute: allowance pins + policy gates", () => {
+  const ROUTER = "0x2626664c2603336E57B271c5C0b26F421741e481" as Address;
+  const USDC = CHAINS[8453].usdc;
+  const WETH = "0x4200000000000000000000000000000000000006" as Address;
+  const SWAP_SIG = "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))";
+  const env = getSmartAccountsEnvironment(8453);
+  const E = env.caveatEnforcers as Record<string, Address>;
+  const lc = (a: string) => a.toLowerCase();
+
+  const swapExec = (): WireExecution => ({
+    target: ROUTER,
+    value: "0",
+    data: ("0x04e45aaf" + "0".repeat(448)) as `0x${string}`, // exactInputSingle selector + 7 words
+  });
+
+  const contractTerms = (extra?: Partial<NonNullable<CardTerms["contract"]>>): CardTerms => ({
+    contract: { targets: [ROUTER], selectors: [SWAP_SIG], tokens: [USDC], perTradeMax: "0.05", ...extra },
+  });
+
+  async function mkContractWorld(terms?: CardTerms) {
+    const { store, relayer, deps } = mkWorld();
+    const issued = await issueRootCard(
+      { store, userSigner: user, now: () => NOW, revocationNonceOverride: 0n },
+      { userId: "u1", name: "swap card", terms: terms ?? contractTerms() },
+    );
+    return { store, relayer, deps, issued };
+  }
+
+  test("approve+swap: approve isolated in a pinned item, swap+fee ride the second", async () => {
+    const { relayer, deps, issued } = await mkContractWorld();
+    const receipt = await spend(deps, issued.cardId, {
+      kind: "execute",
+      mode: "contract",
+      workExecutions: [erc20ApproveExecution(USDC, ROUTER, 30_000n), swapExec()],
+    });
+    expect(receipt.status).toBe("confirmed");
+    const sent = relayer.calls.sends[0]!;
+    expect(sent.length).toBe(2);
+    // item 0: the pinned approve, alone
+    expect(sent[0]!.executions.length).toBe(1);
+    expect(lc(sent[0]!.executions[0]!.target)).toBe(lc(USDC));
+    const pinned = sent[0]!.permissionContext[0]!;
+    const pins = pinned.caveats.filter((c) => lc(c.enforcer) === lc(E.AllowedCalldataEnforcer!));
+    expect(pins.length).toBe(2);
+    expect(lc(pins[0]!.terms)).toContain(lc(ROUTER).slice(2)); // spender pin
+    expect(BigInt("0x" + pins[1]!.terms.slice(-64))).toBe(30_000n); // exact amount pin
+    // pinned leaf scope: ONLY the token target + approve method
+    const targets = pinned.caveats.find((c) => lc(c.enforcer) === lc(E.AllowedTargetsEnforcer!))!;
+    expect(lc(targets.terms)).toBe(lc(USDC));
+    // item 1: swap + fee, behind the normal contract leaf (no calldata pins)
+    expect(sent[1]!.executions.length).toBe(2);
+    expect(sent[1]!.permissionContext[0]!.caveats.filter((c) => lc(c.enforcer) === lc(E.AllowedCalldataEnforcer!)).length).toBe(0);
+    // both items share the same signed root
+    expect(sent[0]!.permissionContext[1]!.signature).toBe(sent[1]!.permissionContext[1]!.signature);
+  });
+
+  test("approve-only batch: pinned item + fee in its own item", async () => {
+    const { relayer, deps, issued } = await mkContractWorld();
+    await spend(deps, issued.cardId, {
+      kind: "execute",
+      mode: "contract",
+      workExecutions: [erc20ApproveExecution(USDC, ROUTER, 1_000n)],
+    });
+    const sent = relayer.calls.sends[0]!;
+    expect(sent.length).toBe(2);
+    expect(sent[0]!.executions.length).toBe(1); // approve alone
+    expect(sent[1]!.executions.length).toBe(1); // fee alone, unpinned leaf
+  });
+
+  test("no-allowance batch keeps the proven single-item shape", async () => {
+    const { relayer, deps, issued } = await mkContractWorld({
+      contract: { targets: [ROUTER], selectors: [SWAP_SIG] },
+    });
+    await spend(deps, issued.cardId, { kind: "execute", mode: "contract", workExecutions: [swapExec()] });
+    const sent = relayer.calls.sends[0]!;
+    expect(sent.length).toBe(1);
+    expect(sent[0]!.executions.length).toBe(2); // swap + fee
+  });
+
+  test("pay mode unchanged: one item, [work, fee]", async () => {
+    const { relayer, deps } = mkWorld();
+    const { store } = { store: deps.store };
+    const issued = await mkCard(deps.store);
+    await spend(deps, issued.cardId, { kind: "pay", mode: "pay", to: MERCHANT, amountAtoms: 1_000_000n });
+    const sent = relayer.calls.sends[0]!;
+    expect(sent.length).toBe(1);
+    expect(sent[0]!.executions.length).toBe(2);
+    void store;
+  });
+
+  test("spender outside scope -> spender_not_allowed (no send)", async () => {
+    const { relayer, deps, issued } = await mkContractWorld();
+    await expect(
+      spend(deps, issued.cardId, {
+        kind: "execute",
+        mode: "contract",
+        workExecutions: [erc20ApproveExecution(USDC, OTHER, 1_000n)],
+      }),
+    ).rejects.toMatchObject({ code: "spender_not_allowed" });
+    expect(relayer.calls.sends.length).toBe(0);
+  });
+
+  test("token off the list -> token_not_allowed", async () => {
+    // WETH callable (declared target with approve unioned via tokens) but NOT a listed allowance token
+    const { deps, issued } = await mkContractWorld(
+      contractTerms({ targets: [ROUTER, WETH], tokens: [USDC] }),
+    );
+    await expect(
+      spend(deps, issued.cardId, {
+        kind: "execute",
+        mode: "contract",
+        workExecutions: [erc20ApproveExecution(WETH, ROUTER, 1n)],
+      }),
+    ).rejects.toMatchObject({ code: "token_not_allowed" });
+  });
+
+  test("USDC allowance above perTradeMax -> per_trade_exceeded; at the cap passes", async () => {
+    const { deps, issued } = await mkContractWorld();
+    await expect(
+      spend(deps, issued.cardId, {
+        kind: "execute",
+        mode: "contract",
+        workExecutions: [erc20ApproveExecution(USDC, ROUTER, 50_001n)],
+      }),
+    ).rejects.toMatchObject({ code: "per_trade_exceeded" });
+    const ok = await spend(deps, issued.cardId, {
+      kind: "execute",
+      mode: "contract",
+      workExecutions: [erc20ApproveExecution(USDC, ROUTER, 50_000n)],
+    });
+    expect(ok.status).toBe("confirmed");
+  });
+
+  test("ancestor gates bind the subtree: parent's token list refuses a sub-card approve", async () => {
+    const { store, deps, issued } = await mkContractWorld(
+      contractTerms({ targets: [ROUTER, WETH], tokens: [USDC] }),
+    );
+    // child declares its own tokens [USDC] (subset ok) but tries a WETH approve at spend
+    const sub = await issueSubCard(
+      { store, now: () => NOW + 10 },
+      { parentCardId: issued.cardId, name: "sub", terms: { contract: { targets: [ROUTER, WETH], selectors: [SWAP_SIG], tokens: [USDC] } } },
+    );
+    await expect(
+      spend(deps, sub.cardId, {
+        kind: "execute",
+        mode: "contract",
+        workExecutions: [erc20ApproveExecution(WETH, ROUTER, 1n)],
+      }),
+    ).rejects.toMatchObject({ code: "token_not_allowed" });
+  });
+
+  test("malformed allowance calldata refused before any relayer traffic", async () => {
+    const { relayer, deps, issued } = await mkContractWorld();
+    await expect(
+      spend(deps, issued.cardId, {
+        kind: "execute",
+        mode: "contract",
+        workExecutions: [{ target: USDC, value: "0", data: ("0x095ea7b3" + "00".repeat(70)) as `0x${string}` }],
+      }),
+    ).rejects.toMatchObject({ code: "invalid_terms" });
+    expect(relayer.calls.estimates.length).toBe(0);
   });
 });

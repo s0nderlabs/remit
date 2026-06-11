@@ -14,6 +14,9 @@ import {
   canonicalSelector,
   payLeafScope,
   contractLeafScope,
+  decodeAllowanceCall,
+  allowancePinCaveats,
+  allowanceLeafScope,
 } from "../src/compiler";
 import { CHAINS, LOGICAL_OR_WRAPPER, SWAP_ROUTER_02 } from "../src/chains";
 import { RefusalError } from "../src/errors";
@@ -253,5 +256,165 @@ describe("attenuate (sub-cards)", () => {
   test("pay child of contract-only parent refused", () => {
     const contractOnly: CardTerms = { contract: parent.contract! };
     expect(() => attenuate(contractOnly, { periodRemainingAtoms: null, lifetimeRemainingAtoms: null }, { pay: { lifetime: { amount: "1" } } }, NOW)).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #42: allowance tokens + perTradeMax (validate/normalize, decode, pins, attenuate)
+// ---------------------------------------------------------------------------
+
+describe("contract.tokens + perTradeMax: validation and normalization", () => {
+  const WETH = "0x4200000000000000000000000000000000000006" as Address;
+
+  test("tokens union into targets, approve unions into selectors", () => {
+    const terms: CardTerms = {
+      contract: { targets: [SWAP_ROUTER_02], selectors: ["exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))"], tokens: [USDC] },
+    };
+    validateTerms(terms, NOW);
+    expect(terms.contract!.targets.map(lc)).toContain(lc(USDC));
+    expect(terms.contract!.selectors).toContain("approve(address,uint256)");
+  });
+
+  test("normalization is idempotent (no duplicate unions)", () => {
+    const terms: CardTerms = {
+      contract: { targets: [SWAP_ROUTER_02, USDC], selectors: ["approve(address,uint256)"], tokens: [USDC] },
+    };
+    validateTerms(terms, NOW);
+    validateTerms(terms, NOW);
+    expect(terms.contract!.targets.filter((t) => lc(t) === lc(USDC)).length).toBe(1);
+    expect(terms.contract!.selectors.filter((s) => s === "approve(address,uint256)").length).toBe(1);
+  });
+
+  test("bad token address / empty list / non-positive perTradeMax refused", () => {
+    expect(() => validateTerms({ contract: { targets: [SWAP_ROUTER_02], selectors: ["approve(address,uint256)"], tokens: ["0xnope" as Address] } }, NOW)).toThrow(RefusalError);
+    expect(() => validateTerms({ contract: { targets: [SWAP_ROUTER_02], selectors: ["approve(address,uint256)"], tokens: [] } }, NOW)).toThrow(RefusalError);
+    expect(() => validateTerms({ contract: { targets: [SWAP_ROUTER_02], selectors: ["approve(address,uint256)"], perTradeMax: "0" } }, NOW)).toThrow(RefusalError);
+  });
+
+  test("malformed amounts refuse with a typed invalid_terms, never a bare 500-class Error", () => {
+    // perTradeMax: non-numeric and over-precise both 422
+    expect(() => validateTerms({ contract: { targets: [SWAP_ROUTER_02], selectors: ["approve(address,uint256)"], perTradeMax: "abc" } }, NOW)).toThrow(RefusalError);
+    expect(() => validateTerms({ contract: { targets: [SWAP_ROUTER_02], selectors: ["approve(address,uint256)"], perTradeMax: "1.1234567" } }, NOW)).toThrow(RefusalError);
+    // pay amounts and perTxMax share the same guard
+    expect(() => validateTerms({ pay: { period: { amount: "abc", seconds: 3600 } } }, NOW)).toThrow(RefusalError);
+    expect(() => validateTerms({ pay: { lifetime: { amount: "1.0000001" } } }, NOW)).toThrow(RefusalError);
+    expect(() => validateTerms({ pay: { lifetime: { amount: "5" } }, perTxMax: "nope" }, NOW)).toThrow(RefusalError);
+  });
+
+  test("tokens compile into the on-chain root scope (allowedTargets carries the token)", () => {
+    const c = compileCard(
+      { contract: { targets: [SWAP_ROUTER_02], selectors: ["exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))"], tokens: [WETH] } },
+      OPTS,
+    );
+    const targetsCaveat = c.rootCaveats.find((cv) => lc(cv.enforcer) === lc(E.AllowedTargetsEnforcer!))!;
+    expect(lc(targetsCaveat.terms)).toContain(lc(WETH).slice(2));
+  });
+});
+
+describe("decodeAllowanceCall + allowance pins", () => {
+  const SPENDER = SWAP_ROUTER_02;
+
+  const approveData = (spender: Address, amount: bigint): `0x${string}` =>
+    ("0x095ea7b3" + spender.slice(2).toLowerCase().padStart(64, "0") + amount.toString(16).padStart(64, "0")) as `0x${string}`;
+
+  test("approve decodes to token/spender/amount", () => {
+    const al = decodeAllowanceCall({ target: USDC, data: approveData(SPENDER, 50_000n) })!;
+    expect(lc(al.token)).toBe(lc(USDC));
+    expect(lc(al.spender)).toBe(lc(SPENDER));
+    expect(al.amountAtoms).toBe(50_000n);
+    expect(al.sig).toBe("approve(address,uint256)");
+  });
+
+  test("increaseAllowance decodes as allowance too", () => {
+    const data = ("0x39509351" + SPENDER.slice(2).toLowerCase().padStart(64, "0") + (7n).toString(16).padStart(64, "0")) as `0x${string}`;
+    const al = decodeAllowanceCall({ target: USDC, data })!;
+    expect(al.sig).toBe("increaseAllowance(address,uint256)");
+    expect(al.amountAtoms).toBe(7n);
+  });
+
+  test("non-allowance methods return null", () => {
+    expect(decodeAllowanceCall({ target: USDC, data: "0xa9059cbb" + "0".repeat(128) as `0x${string}` })).toBeNull();
+  });
+
+  test("malformed allowance calldata refused (trailing bytes / dirty spender word)", () => {
+    expect(() => decodeAllowanceCall({ target: USDC, data: (approveData(SPENDER, 1n) + "ff") as `0x${string}` })).toThrow(RefusalError);
+    const dirty = ("0x095ea7b3" + "ff".repeat(12) + SPENDER.slice(2) + (1n).toString(16).padStart(64, "0")) as `0x${string}`;
+    expect(() => decodeAllowanceCall({ target: USDC, data: dirty })).toThrow(RefusalError);
+  });
+
+  test("pins: AllowedCalldata spender@4 + amount@36, exact padded values", () => {
+    const al = decodeAllowanceCall({ target: USDC, data: approveData(SPENDER, 123_456n) })!;
+    const pins = allowancePinCaveats(al, 8453);
+    expect(pins.length).toBe(2);
+    for (const p of pins) expect(lc(p.enforcer)).toBe(lc(E.AllowedCalldataEnforcer!));
+    expect(lc(pins[0]!.terms)).toBe(
+      "0x" + (4n).toString(16).padStart(64, "0") + SPENDER.slice(2).toLowerCase().padStart(64, "0"),
+    );
+    expect(lc(pins[1]!.terms)).toBe(
+      "0x" + (36n).toString(16).padStart(64, "0") + (123_456n).toString(16).padStart(64, "0"),
+    );
+  });
+
+  test("allowanceLeafScope narrows to [token] x [called sig]", () => {
+    const al = decodeAllowanceCall({ target: USDC, data: approveData(SPENDER, 1n) })!;
+    const scope = allowanceLeafScope(al);
+    expect(scope.targets).toEqual([USDC]);
+    expect(scope.selectors).toEqual(["approve(address,uint256)"]);
+  });
+});
+
+describe("attenuate: tokens + perTradeMax", () => {
+  const WETH = "0x4200000000000000000000000000000000000006" as Address;
+  const swapSig = "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))";
+  const mkParent = (): CardTerms => {
+    const p: CardTerms = {
+      contract: { targets: [SWAP_ROUTER_02], selectors: [swapSig], tokens: [USDC, WETH], perTradeMax: "5" },
+    };
+    validateTerms(p, NOW); // stored parents are normalized
+    return p;
+  };
+  const noRemaining = { periodRemainingAtoms: null, lifetimeRemainingAtoms: null };
+
+  test("child tokens subset allowed; foreign token refused", () => {
+    const parent = mkParent();
+    const ok = attenuate(parent, noRemaining, { contract: { targets: [SWAP_ROUTER_02], selectors: [swapSig], tokens: [USDC] } }, NOW);
+    expect(ok.contract!.tokens!.map(lc)).toEqual([lc(USDC)]);
+    expect(() =>
+      attenuate(parent, noRemaining, { contract: { targets: [SWAP_ROUTER_02], selectors: [swapSig], tokens: ["0x3333333333333333333333333333333333333333" as Address] } }, NOW),
+    ).toThrow(RefusalError);
+  });
+
+  test("tokens are NOT inherited by a silent child (no surprise allowance capability)", () => {
+    const parent = mkParent();
+    const child = attenuate(parent, noRemaining, { contract: { targets: [SWAP_ROUTER_02], selectors: [swapSig] } }, NOW);
+    expect(child.contract!.tokens).toBeUndefined();
+    expect(child.contract!.selectors).not.toContain("approve(address,uint256)");
+  });
+
+  test("child can't smuggle scope via tokens (normalize-before-subset)", () => {
+    // parent WITHOUT approve anywhere in scope
+    const parent: CardTerms = { contract: { targets: [SWAP_ROUTER_02], selectors: [swapSig] } };
+    validateTerms(parent, NOW);
+    expect(() =>
+      attenuate(parent, noRemaining, { contract: { targets: [SWAP_ROUTER_02], selectors: [swapSig], tokens: [USDC] } }, NOW),
+    ).toThrow(RefusalError);
+  });
+
+  test("perTradeMax inherits when silent only onto an approve-capable child; child above parent refused; tighter ok", () => {
+    const parent = mkParent();
+    // approve-capable silent child (tokens union approve into scope) inherits the cap
+    const capable = attenuate(parent, noRemaining, { contract: { targets: [SWAP_ROUTER_02], selectors: [swapSig], tokens: [USDC] } }, NOW);
+    expect(capable.contract!.perTradeMax).toBe("5");
+    // a child with no approve in scope can never trigger the cap: nothing to inherit
+    const silent = attenuate(parent, noRemaining, { contract: { targets: [SWAP_ROUTER_02], selectors: [swapSig] } }, NOW);
+    expect(silent.contract!.perTradeMax).toBeUndefined();
+    const tighter = attenuate(parent, noRemaining, { contract: { targets: [SWAP_ROUTER_02], selectors: [swapSig], perTradeMax: "1" } }, NOW);
+    expect(tighter.contract!.perTradeMax).toBe("1");
+    try {
+      attenuate(parent, noRemaining, { contract: { targets: [SWAP_ROUTER_02], selectors: [swapSig], perTradeMax: "10" } }, NOW);
+      throw new Error("expected refusal");
+    } catch (e) {
+      expect((e as RefusalError).detail?.field).toBe("contract.perTradeMax");
+    }
   });
 });

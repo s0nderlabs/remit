@@ -1,12 +1,17 @@
 "use client";
 
-// Home: Privy login -> embedded wallet -> onboard (silent 7702) -> composer (client-
-// signed issuance) -> THE TREE. Minimal pixels, full functionality.
+// Home: Privy login -> embedded wallet -> onboard (silent 7702) -> the stage.
+// Rail = nav + cards; stage = the card and its authority, views swap below.
+// All v1 flows preserved (testids intact).
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
-import { api, type TreeNode, type CardTermsInput } from "@/lib/api";
+import { api, type TreeNode, type CardTermsInput, type CompileLabel, type CompileResult } from "@/lib/api";
 import { useRemit } from "./useRemit";
+import { Cockpit, SecHead } from "./components/Shell";
+import { TermsGrid, caveatCount } from "./components/Authority";
+import { SubRows } from "./components/SubCards";
+import { ChargesTable, MetricsRow, periodWindow, type FeedRow } from "./components/Activity";
+import { isDead, shortHex } from "./components/ui";
 
 export default function Home() {
   const remit = useRemit();
@@ -14,6 +19,7 @@ export default function Home() {
   const did = user?.id;
 
   const [onboarded, setOnboarded] = useState(false);
+  const [probed, setProbed] = useState(false);
   const [onboarding, setOnboarding] = useState(false);
   const [onboardErr, setOnboardErr] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
@@ -27,18 +33,41 @@ export default function Home() {
   useEffect(() => {
     if (prevDidRef.current !== undefined && prevDidRef.current !== did) {
       setOnboarded(false);
+      setProbed(false);
       setOnboardErr(null);
       onboardingRef.current = false;
     }
     prevDidRef.current = did;
   }, [did]);
 
+  // Returning-user fast path: if a cheap authed read succeeds, the server already
+  // knows this wallet — skip the 7702 + proof ceremony (and its interstitial)
+  // entirely. Only when the probe fails (server doesn't know the wallet yet) does
+  // the full onboard run below.
+  useEffect(() => {
+    if (!authenticated || !address || !did || onboarded || probed) return;
+    let live = true;
+    (async () => {
+      try {
+        await api.cards();
+        if (live) setOnboarded(true);
+      } catch {
+        // unknown wallet (or transient failure) — fall through to the ceremony
+      } finally {
+        if (live) setProbed(true);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [authenticated, address, did, onboarded, probed]);
+
   // Auto-onboard once the embedded wallet is ready: sign the 7702 authorization
   // (silent, grants nothing) + the onboard proof (binds the wallet to this Privy
   // login server-side) and register the wallet. Runs once; retryNonce re-arms it
   // after a failure.
   useEffect(() => {
-    if (!authenticated || !address || !did || !embeddedReady || onboarded || onboardingRef.current) return;
+    if (!probed || !authenticated || !address || !did || !embeddedReady || onboarded || onboardingRef.current) return;
     onboardingRef.current = true;
     setOnboarding(true);
     (async () => {
@@ -55,22 +84,31 @@ export default function Home() {
         setOnboarding(false);
       }
     })();
-  }, [authenticated, address, did, embeddedReady, onboarded, sign7702, signOnboardProof, retryNonce]);
+  }, [probed, authenticated, address, did, embeddedReady, onboarded, sign7702, signOnboardProof, retryNonce]);
 
-  if (!ready) return <div className="mono">loading…</div>;
+  if (!ready) return <Centered note="loading…" />;
   if (!authenticated) return <Login onLogin={login} />;
 
-  return (
-    <>
-      <AccountBar address={address} onboarded={onboarded} onLogout={logout} />
-      {!address && <div className="panel mono">creating your embedded wallet…</div>}
-      {address && !onboarded && (
-        <div className="panel mono" data-testid="onboarding">
-          {onboarding ? "activating your account (signing 7702 authorization)…" : "activation pending"}
+  if (!address) return <Centered note="creating your embedded wallet…" />;
+  if (!onboarded && !probed) return <Centered note="loading…" />;
+  if (!onboarded) {
+    return (
+      <main className="narrow" data-testid="onboarding">
+        <div className="panel" style={{ textAlign: "center", padding: 40 }}>
+          <span className="pill live" style={{ marginBottom: 16 }}>
+            <b />
+            {onboarding ? "Activating" : "Activation pending"}
+          </span>
+          <p style={{ color: "var(--body)", fontSize: 13, marginTop: 14 }}>
+            {onboarding
+              ? "signing your 7702 authorization · silent, grants nothing on its own"
+              : "waiting for your embedded wallet"}
+          </p>
           {onboardErr && (
-            <p className="err">
+            <p className="err" style={{ marginTop: 12 }}>
               onboard failed: {onboardErr}{" "}
               <button
+                style={{ marginLeft: 8 }}
                 onClick={() => {
                   onboardingRef.current = false;
                   setOnboardErr(null);
@@ -82,49 +120,69 @@ export default function Home() {
             </p>
           )}
         </div>
-      )}
-      {address && onboarded && <Dashboard remit={remit} address={address} />}
-    </>
+      </main>
+    );
+  }
+
+  return <Dashboard remit={remit} address={address} onLogout={logout} />;
+}
+
+function Centered({ note }: { note: string }) {
+  return (
+    <main className="narrow" style={{ textAlign: "center" }}>
+      <span style={{ color: "var(--body)", fontSize: 13 }}>{note}</span>
+    </main>
   );
 }
 
 function Login({ onLogin }: { onLogin: () => void }) {
   return (
-    <div className="panel" style={{ textAlign: "center", padding: 40 }}>
-      <h2>sign in to remit</h2>
-      <p className="mono" style={{ color: "#666" }}>
-        email or Google · we provision your embedded wallet · no seed phrase
+    <main className="narrow" style={{ textAlign: "center", paddingTop: 140 }}>
+      <h1 className="rv" style={{ animationDelay: ".08s", fontSize: 32 }}>
+        remit
+      </h1>
+      <p className="rv serif" style={{ animationDelay: ".16s", fontSize: 18, color: "var(--body)", marginTop: 6 }}>
+        authority, lent not given.
       </p>
-      <button onClick={onLogin} data-testid="login">
-        sign in
-      </button>
-    </div>
+      <p className="rv" style={{ animationDelay: ".24s", color: "var(--body)", fontSize: 13, margin: "18px 0 26px" }}>
+        scoped, revocable spending cards for your agents · email or Google · no seed phrase
+      </p>
+      <span className="rv" style={{ animationDelay: ".32s", display: "inline-block" }}>
+        <button className="primary" onClick={onLogin} data-testid="login">
+          Sign in
+        </button>
+      </span>
+    </main>
   );
 }
 
-function AccountBar({
+// ---------------------------------------------------------------------------
+
+const TABS = [
+  { id: "overview", label: "Overview" },
+  { id: "subcards", label: "Sub-cards" },
+  { id: "activity", label: "Activity" },
+];
+
+function Dashboard({
+  remit,
   address,
-  onboarded,
   onLogout,
 }: {
-  address?: string;
-  onboarded: boolean;
+  remit: ReturnType<typeof useRemit>;
+  address: string;
   onLogout: () => void;
 }) {
-  return (
-    <div className="row" style={{ justifyContent: "space-between", marginBottom: 16 }}>
-      <span className="mono" data-testid="account">
-        {address ? `${address.slice(0, 6)}…${address.slice(-4)}` : "—"}{" "}
-        <span className={`chip ${onboarded ? "active" : "frozen"}`}>{onboarded ? "active" : "activating"}</span>
-      </span>
-      <button onClick={onLogout}>logout</button>
-    </div>
-  );
-}
-
-function Dashboard({ remit, address }: { remit: ReturnType<typeof useRemit>; address: string }) {
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [kAgent, setKAgent] = useState<string | undefined>(undefined);
+  const [kmap, setKmap] = useState<Map<string, string>>(new Map());
+  const [feed, setFeed] = useState<FeedRow[]>([]);
+  const [view, setView] = useState("overview");
+  const [issueOpen, setIssueOpen] = useState(false);
+
+  // hero = the first live root (or the first root at all)
+  const heroNode = tree.find((n) => !isDead(n.card.status)) ?? tree[0] ?? null;
 
   const refresh = useCallback(async () => {
     try {
@@ -142,66 +200,167 @@ function Dashboard({ remit, address }: { remit: ReturnType<typeof useRemit>; add
     return () => clearInterval(t);
   }, [refresh]);
 
+  // Detail poll: the hero card + its direct sub-cards, merged into one attributed
+  // feed (the ledger answers "who spent this"). Same 3s cadence as the tree.
+  const heroId = heroNode?.card.card_id ?? "";
+  const idsKey = heroNode
+    ? [heroNode.card.card_id, ...heroNode.children.map((c) => c.card.card_id)].join(",")
+    : "";
+
+  // When the HERO itself changes (revoke/nuke demotes it, or a new root takes
+  // over), drop the old hero's feed immediately — never show the previous
+  // card's spend and delegate attributed to the new one while the load runs.
+  useEffect(() => {
+    setFeed([]);
+    setKAgent(undefined);
+    setKmap(new Map());
+  }, [heroId]);
+  useEffect(() => {
+    if (!idsKey) {
+      setFeed([]);
+      setKAgent(undefined);
+      setKmap(new Map());
+      return;
+    }
+    const ids = idsKey.split(",");
+    let live = true;
+    const load = async () => {
+      const ds = await Promise.all(ids.map((id) => api.card(id).catch(() => null)));
+      if (!live) return;
+      const km = new Map<string, string>();
+      const rows: FeedRow[] = [];
+      ds.forEach((d, i) => {
+        if (!d) return;
+        km.set(ids[i], d.k_agent_address);
+        for (const ch of d.charges) rows.push({ ch, cardName: d.name });
+      });
+      rows.sort((a, b) => b.ch.at - a.ch.at);
+      setKAgent(ds[0]?.k_agent_address);
+      setKmap(km);
+      setFeed(rows);
+    };
+    load();
+    const t = setInterval(load, 3000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, [idsKey]);
+
+  const liveSubs = heroNode ? heroNode.children.filter((c) => !isDead(c.card.status)).length : 0;
+  const window_ = periodWindow(heroNode?.card ?? null);
+  const openIssue = () => setIssueOpen(true);
+
   return (
-    <>
-      <Composer remit={remit} address={address} onIssued={refresh} />
-      <h2>card tree</h2>
-      {error && <div className="err">api error: {error}</div>}
-      {tree.length === 0 && !error && <div className="mono">no cards yet — issue one above</div>}
-      {tree.map((n) => (
-        <Node key={n.card.card_id} node={n} />
-      ))}
-      {/* Nuke stays MOUNTED after a successful nuke: its phase="done" + basescan tx link
-          (the cascade-revoke proof on screen) live in component state, and unmounting on
-          the post-nuke refresh (no live cards left -> gate false) would wipe them ~1s
-          after success. The has-live gate moves INSIDE the component instead. */}
-      {tree.length > 0 && (
-        <Nuke
-          remit={remit}
-          onNuked={refresh}
-          hasLive={tree.some((n) => n.card.status === "active" || n.card.status === "frozen")}
-        />
+    <Cockpit
+      card={heroNode?.card ?? null}
+      kAgent={kAgent}
+      roots={tree}
+      currentId={heroNode?.card.card_id ?? null}
+      remit={remit}
+      refresh={refresh}
+      onLogout={onLogout}
+      address={address}
+      subcardCount={liveSubs}
+      tabs={TABS}
+      view={view}
+      onView={setView}
+      onIssue={openIssue}
+      nukeable={tree.some((n) => n.card.status === "active" || n.card.status === "frozen")}
+    >
+      {error && (
+        <p className="err" style={{ marginTop: 20 }}>
+          api error: {error}
+        </p>
       )}
-    </>
+
+      {(issueOpen || !heroNode) && (
+        <section className="sec panel issuebox">
+          <div className="phead">
+            <h2>{heroNode ? "Issue a card" : "Issue your first card"}</h2>
+            <div className="r">
+              client-signed · the URL is the credential
+              {heroNode && (
+                <button className="closex" onClick={() => setIssueOpen(false)} aria-label="close">
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+          <Composer remit={remit} address={address} onIssued={refresh} />
+        </section>
+      )}
+
+      {heroNode && view === "overview" && (
+        <>
+          <section className="sec panel">
+            <SecHead title="This period" right={window_ ?? "all time"} />
+            <MetricsRow card={heroNode.card} feed={feed} liveSubs={liveSubs} />
+          </section>
+          <section className="sec panel">
+            <SecHead title="Delegation terms" right={`${caveatCount(heroNode.card)} terms on this card`} />
+            <TermsGrid card={heroNode.card} agentAddress={kAgent} />
+          </section>
+        </>
+      )}
+
+      {heroNode && view === "subcards" && (
+        <section className="sec panel">
+          <SecHead title="Sub-cards" right="caps narrow downward" />
+          <SubRows node={heroNode} kmap={kmap} onIssue={openIssue} />
+        </section>
+      )}
+
+      {heroNode && view === "activity" && (
+        <section className="sec panel">
+          <SecHead
+            title="Activity"
+            right={
+              <span className="pill live">
+                <b />
+                live
+              </span>
+            }
+          />
+          <ChargesTable rows={feed} />
+        </section>
+      )}
+    </Cockpit>
   );
 }
 
-function pct(remaining: string | null, cap?: string): number {
-  if (remaining === null || !cap) return 100;
-  const r = parseFloat(remaining);
-  const c = parseFloat(cap);
-  return c > 0 ? Math.max(0, Math.min(100, (r / c) * 100)) : 0;
-}
+// ---------------------------------------------------------------------------
+// Composer: client-signed issuance (prepare -> sign -> finalize), v1 logic.
+// Two ways in, one draft: describe the card in plain English (the Venice
+// compile box prefills the fields) or set the spec-sheet rows by hand —
+// card / pay / execute. Either way the user reviews every field and signs.
+// ---------------------------------------------------------------------------
 
-function Node({ node }: { node: TreeNode }) {
-  const c = node.card;
-  const cap = c.terms.pay?.period?.amount ?? c.terms.pay?.lifetime?.amount;
-  const remaining = c.remaining_this_period ?? c.remaining_lifetime;
-  const dead = c.status !== "active" && c.status !== "frozen";
-  return (
-    <div className={`node${dead ? " dead" : ""}`}>
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <span>
-          <Link href={`/card/${c.card_id}`}>{c.name}</Link>{" "}
-          <span className={`chip ${c.status}`}>{c.status}</span>
-        </span>
-        <span className="mono">{remaining !== null && cap ? `${remaining} / ${cap} USDC` : "—"}</span>
-      </div>
-      <div className="meter">
-        <div
-          style={{ width: `${dead ? 0 : pct(remaining, cap)}%`, background: c.status === "frozen" ? "var(--amber)" : undefined }}
-        />
-      </div>
-      {node.children.length > 0 && (
-        <div className="kids">
-          {node.children.map((k) => (
-            <Node key={k.card.card_id} node={k} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+const PERIODS = [86400, 604800, 2592000];
+const closestPeriod = (s: number) => PERIODS.reduce((a, b) => (Math.abs(b - s) < Math.abs(a - s) ? b : a));
+const splitList = (s: string) =>
+  s
+    .split(/[,\n]/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+/** split a comma list, but never inside parentheses — method signatures carry commas */
+const splitSelectors = (s: string): string[] => {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of s) {
+    if (ch === "(") depth++;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    if ((ch === "," || ch === "\n") && depth === 0) {
+      if (cur.trim()) out.push(cur.trim());
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+};
 
 function Composer({
   remit,
@@ -212,31 +371,102 @@ function Composer({
   address: string;
   onIssued: () => void;
 }) {
+  // card
   const [name, setName] = useState("agent card");
+  const [expiryDays, setExpiryDays] = useState(30);
+  const [maxUses, setMaxUses] = useState("");
+  const [subcards, setSubcards] = useState(true);
+  // pay lane
   const [amount, setAmount] = useState("25");
   const [period, setPeriod] = useState(604800);
-  const [expiryDays, setExpiryDays] = useState(30);
+  const [lifetime, setLifetime] = useState("");
   const [perTx, setPerTx] = useState("");
   const [merchants, setMerchants] = useState("");
-  const [subcards, setSubcards] = useState(true);
+  // execute lane (#42)
+  const [targets, setTargets] = useState("");
+  const [selectors, setSelectors] = useState("");
+  const [tokens, setTokens] = useState("");
+  const [perTrade, setPerTrade] = useState("");
+
+  const [draftN, setDraftN] = useState(0); // bumps on every applied draft (re-runs the flash)
   const [busy, setBusy] = useState(false);
   const [issuedUrl, setIssuedUrl] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
+  function buildTerms(): CardTermsInput {
+    const pay: NonNullable<CardTermsInput["pay"]> = {};
+    if (amount.trim() && parseFloat(amount) > 0) pay.period = { amount: amount.trim(), seconds: period };
+    if (lifetime.trim()) pay.lifetime = { amount: lifetime.trim() };
+    const tg = splitList(targets);
+    const sel = splitSelectors(selectors);
+    const tk = splitList(tokens);
+    const contract =
+      tg.length && sel.length
+        ? {
+            targets: tg,
+            selectors: sel,
+            ...(tk.length ? { tokens: tk } : {}),
+            ...(perTrade.trim() ? { perTradeMax: perTrade.trim() } : {}),
+          }
+        : undefined;
+    const uses = parseInt(maxUses, 10);
+    return {
+      ...(pay.period || pay.lifetime ? { pay } : {}),
+      ...(contract ? { contract } : {}),
+      expiry: Math.floor(Date.now() / 1000) + expiryDays * 86400,
+      subcards,
+      ...(Number.isFinite(uses) && uses >= 1 ? { maxUses: uses } : {}),
+      ...(perTx.trim() ? { perTxMax: perTx.trim() } : {}),
+      ...(merchants.trim() ? { merchants: splitList(merchants) } : {}),
+    };
+  }
+
+  /** prefill every field from a compiled draft — the user still reviews + signs */
+  function applyDraft(r: CompileResult) {
+    const d = r.draft;
+    if (!d) return;
+    if (d.pay?.period) {
+      setAmount(d.pay.period.amount);
+      setPeriod(closestPeriod(d.pay.period.seconds));
+    } else {
+      setAmount("");
+    }
+    setLifetime(d.pay?.lifetime?.amount ?? "");
+    setPerTx(d.perTxMax ?? "");
+    setMerchants((d.merchants ?? []).join(", "));
+    if (d.expiry) setExpiryDays(Math.max(1, Math.round((d.expiry - Date.now() / 1000) / 86400)));
+    setMaxUses(d.maxUses ? String(d.maxUses) : "");
+    if (d.subcards !== undefined) setSubcards(d.subcards);
+    setTargets((d.contract?.targets ?? []).join(", "));
+    setSelectors((d.contract?.selectors ?? []).join(", "));
+    setTokens((d.contract?.tokens ?? []).join(", "));
+    setPerTrade(d.contract?.perTradeMax ?? "");
+    setDraftN((n) => n + 1);
+  }
+
   async function issue() {
-    setBusy(true);
     setErr(null);
     setIssuedUrl(null);
+    // a half-filled execute scope must not silently vanish from the signed terms
+    const hasTargets = splitList(targets).length > 0;
+    const hasSelectors = splitSelectors(selectors).length > 0;
+    if (hasTargets !== hasSelectors) {
+      setErr("the execute scope needs both contracts and methods · fill both or clear both");
+      return;
+    }
+    // tokens/per-trade live inside the contract block; without a scope they'd be
+    // silently dropped from the signed terms
+    if ((splitList(tokens).length > 0 || perTrade.trim()) && !hasTargets) {
+      setErr("a token allowance needs a contract scope · add contracts and methods, or clear the token fields");
+      return;
+    }
+    const terms = buildTerms();
+    if (!terms.pay && !terms.contract) {
+      setErr("give the card a pay budget or a contract scope · an empty card can do nothing");
+      return;
+    }
+    setBusy(true);
     try {
-      const terms: CardTermsInput = {
-        pay: { period: { amount, seconds: period } },
-        expiry: Math.floor(Date.now() / 1000) + expiryDays * 86400,
-        subcards,
-        ...(perTx ? { perTxMax: perTx } : {}),
-        ...(merchants.trim()
-          ? { merchants: merchants.split(",").map((m) => m.trim()).filter(Boolean) }
-          : {}),
-      };
       // 1) server compiles caveats + mints K_agent, returns the UNSIGNED delegation
       const prep = await api.prepareCard(name, terms, address);
       // 2) the embedded wallet signs it in the browser (the issuance ceremony)
@@ -252,138 +482,202 @@ function Composer({
     }
   }
 
+  const field = (label: string, el: React.ReactNode) => (
+    <div className="field">
+      <label>{label}</label>
+      {el}
+    </div>
+  );
+
   return (
     <>
-      <h2>issue a card</h2>
-      <div className="panel">
-        <div className="row">
-          <label>
-            name<br />
-            <input value={name} onChange={(e) => setName(e.target.value)} data-testid="composer-name" />
-          </label>
-          <label>
-            budget (USDC)<br />
-            <input value={amount} onChange={(e) => setAmount(e.target.value)} style={{ width: 90 }} data-testid="composer-amount" />
-          </label>
-          <label>
-            per<br />
+      <CompileBox onDraft={applyDraft} />
+      <div className="ordiv">
+        <span>or set the terms yourself</span>
+      </div>
+      <div className={`composer2${draftN ? " flash" : ""}`} key={draftN}>
+        <div className="crow">
+          <span className="cgroup">card</span>
+          {field("Name", <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: 150 }} data-testid="composer-name" />)}
+          {field(
+            "Expires · days",
+            <input type="number" value={expiryDays} onChange={(e) => setExpiryDays(Number(e.target.value))} style={{ width: 72 }} />,
+          )}
+          {field(
+            "Max uses",
+            <input value={maxUses} onChange={(e) => setMaxUses(e.target.value)} placeholder="∞" style={{ width: 72 }} data-testid="composer-maxuses" />,
+          )}
+          {field(
+            "Sub-cards",
+            <select value={subcards ? "yes" : "no"} onChange={(e) => setSubcards(e.target.value === "yes")}>
+              <option value="yes">allowed</option>
+              <option value="no">no</option>
+            </select>,
+          )}
+        </div>
+
+        <div className="crow">
+          <span className="cgroup">pay · usdc</span>
+          {field(
+            "Budget",
+            <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-amount" />,
+          )}
+          {field(
+            "Per",
             <select value={period} onChange={(e) => setPeriod(Number(e.target.value))}>
               <option value={86400}>day</option>
               <option value={604800}>week</option>
               <option value={2592000}>30 days</option>
-            </select>
-          </label>
-          <label>
-            expires in (days)<br />
-            <input type="number" value={expiryDays} onChange={(e) => setExpiryDays(Number(e.target.value))} style={{ width: 70 }} />
-          </label>
-          <label>
-            per-charge max (opt)<br />
-            <input value={perTx} onChange={(e) => setPerTx(e.target.value)} placeholder="—" style={{ width: 90 }} />
-          </label>
-          <label>
-            merchant lock (opt, comma)<br />
-            <input value={merchants} onChange={(e) => setMerchants(e.target.value)} placeholder="0x…, 0x…" style={{ width: 220 }} />
-          </label>
-          <label>
-            sub-cards<br />
-            <input type="checkbox" checked={subcards} onChange={(e) => setSubcards(e.target.checked)} />
-          </label>
-          <button onClick={issue} disabled={busy} data-testid="composer-issue">
-            {busy ? "signing…" : "issue card"}
+            </select>,
+          )}
+          {field(
+            "Lifetime cap",
+            <input value={lifetime} onChange={(e) => setLifetime(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-lifetime" />,
+          )}
+          {field("Per-charge max", <input value={perTx} onChange={(e) => setPerTx(e.target.value)} placeholder="none" style={{ width: 92 }} />)}
+          {field(
+            "Merchant lock",
+            <input value={merchants} onChange={(e) => setMerchants(e.target.value)} placeholder="0x…, 0x…" style={{ width: 170 }} />,
+          )}
+        </div>
+
+        <div className="crow">
+          <span className="cgroup">execute · contracts</span>
+          {field(
+            "Contracts",
+            <input className="wide" value={targets} onChange={(e) => setTargets(e.target.value)} placeholder="0x…, 0x…" data-testid="composer-targets" />,
+          )}
+          {field(
+            "Methods",
+            <input
+              className="wide"
+              value={selectors}
+              onChange={(e) => setSelectors(e.target.value)}
+              placeholder="approve(address,uint256), …"
+              data-testid="composer-selectors"
+            />,
+          )}
+          {field(
+            "Tokens · allowance",
+            <input value={tokens} onChange={(e) => setTokens(e.target.value)} placeholder="0x… · optional" style={{ width: 136 }} data-testid="composer-tokens" />,
+          )}
+          {field(
+            "Per-trade max",
+            <input value={perTrade} onChange={(e) => setPerTrade(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-pertrademax" />,
+          )}
+        </div>
+
+        <div className="cfoot">
+          <p className="chint">leave pay empty for an execute-only card · leave contracts empty for a pay-only card</p>
+          <button className="primary" onClick={issue} disabled={busy} data-testid="composer-issue">
+            {busy ? "signing…" : "Issue card"}
           </button>
         </div>
-        {err && <p className="err">{err}</p>}
-        {issuedUrl && (
-          <div style={{ marginTop: 12 }}>
-            <div className="ok">card issued — hand this URL to your agent (it IS the credential):</div>
-            <div className="urlbox" data-testid="issued-url">{issuedUrl}</div>
-          </div>
-        )}
       </div>
+      {err && <p className="err" style={{ marginTop: 12 }}>{err}</p>}
+      {issuedUrl && (
+        <div style={{ marginTop: 16, maxWidth: 560 }}>
+          <div className="ok" style={{ marginBottom: 8 }}>
+            card issued · hand this URL to your agent (it IS the credential):
+          </div>
+          <div className="urlbox" data-testid="issued-url">
+            {issuedUrl}
+          </div>
+        </div>
+      )}
     </>
   );
 }
 
-// Cascade revoke (NonceEnforcer bump): ONE on-chain tx kills every card + sub-card
-// bound to the old nonce. The embedded wallet signs the admin leaf in the browser;
-// the relayer executes it gaslessly (the fee comes from A_user's USDC).
-function Nuke({
-  remit,
-  onNuked,
-  hasLive,
-}: {
-  remit: ReturnType<typeof useRemit>;
-  onNuked: () => void;
-  hasLive: boolean;
-}) {
-  const [phase, setPhase] = useState<"idle" | "confirm" | "signing" | "submitting" | "done" | "error">("idle");
-  const [tx, setTx] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+// ---------------------------------------------------------------------------
+// CompileBox: describe the card in plain English; Venice drafts a plan, the
+// server resolves every name against its verified registry (the model never
+// supplies addresses), and the draft prefills the composer (#43). Never issues.
+// ---------------------------------------------------------------------------
 
-  // nothing live to nuke and no success to show: render nothing (the parent keeps us
-  // mounted so a just-completed nuke's proof link survives the tree refresh)
-  if (!hasLive && phase !== "done") return null;
+function CompileBox({ onDraft }: { onDraft: (r: CompileResult) => void }) {
+  const [intent, setIntent] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [labels, setLabels] = useState<CompileLabel[]>([]);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [drafted, setDrafted] = useState(false);
 
   async function go() {
+    if (!intent.trim() || busy) return;
+    setBusy(true);
     setErr(null);
+    setDrafted(false);
+    setLabels([]);
+    setWarnings([]);
     try {
-      setPhase("signing");
-      const prep = await api.prepareNuke();
-      const signature = await remit.signDelegation(prep.delegation);
-      setPhase("submitting");
-      const fin = await api.finalizeNuke(prep.prepare_id, signature);
-      setTx(fin.tx);
-      setPhase("done");
-      onNuked();
+      const r = await api.compile(intent.trim());
+      setLabels(r.labels);
+      setWarnings(r.warnings);
+      if (r.draft) {
+        onDraft(r);
+        setDrafted(true);
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
-      setPhase("error");
+    } finally {
+      setBusy(false);
     }
   }
 
   return (
-    <>
-      <h2>nuke</h2>
-      <div className="panel">
-        <div className="row" style={{ gap: 10 }}>
-          {phase === "done" ? (
-            <span className="mono" data-testid="nuke-done">
-              nuked ✓ every card is dead.{" "}
-              {tx && (
-                <a href={`https://basescan.org/tx/${tx}`} target="_blank" rel="noreferrer">
-                  {tx.slice(0, 10)}…
-                </a>
-              )}
-            </span>
-          ) : phase === "signing" || phase === "submitting" ? (
-            <span className="mono" data-testid="nuke-busy">
-              {phase === "signing" ? "signing with your wallet…" : "one tx, killing the whole tree…"}
-            </span>
-          ) : phase === "confirm" ? (
-            <>
-              <span className="err mono">kill EVERY card and sub-card, permanently, on-chain?</span>
-              <button className="ghost" onClick={go} data-testid="nuke-confirm">yes, nuke everything</button>
-              <button className="ghost" onClick={() => setPhase("idle")}>cancel</button>
-            </>
-          ) : (
-            <>
-              <button
-                className="ghost"
-                disabled={!remit.embeddedReady}
-                onClick={() => setPhase("confirm")}
-                data-testid="nuke"
-              >
-                nuke all cards
-              </button>
-              <span className="mono" style={{ color: "#666" }}>
-                cascade revoke: one on-chain tx (NonceEnforcer bump) kills the entire tree
-              </span>
-            </>
-          )}
-        </div>
-        {err && <p className="err mono">nuke failed: {err}</p>}
+    <div className="compilebox">
+      <div className="cbtop">
+        <span className="lbl">Describe the card</span>
+        <span className="cbven">venice drafts · you sign</span>
       </div>
-    </>
+      <div className="cbrow">
+        <textarea
+          value={intent}
+          rows={2}
+          maxLength={2000}
+          placeholder="$25 a week for api calls, can swap usdc to weth on uniswap up to $50 per trade, expires in 30 days"
+          onChange={(e) => setIntent(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) go();
+          }}
+          data-testid="compile-intent"
+        />
+        <button className="primary" onClick={go} disabled={busy || !intent.trim()} data-testid="compile-go">
+          {busy ? "drafting…" : "Draft terms"}
+        </button>
+      </div>
+      {err && (
+        <p className="err" style={{ marginTop: 10 }}>
+          {err}
+        </p>
+      )}
+      {drafted && (
+        <p className="ok" style={{ marginTop: 10 }}>
+          draft applied below · review every term before signing
+        </p>
+      )}
+      {labels.length > 0 && (
+        <div className="lblchips" data-testid="compile-labels">
+          {labels.map((l) => (
+            <span key={`${l.address}-${l.label}`} className="lblchip" title={`${l.address} · ${l.source}`}>
+              <i className={`lk ${l.kind}`} />
+              {l.label}
+              <span className="data">{shortHex(l.address)}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {warnings.length > 0 && (
+        <ul className="warnlist" data-testid="compile-warnings">
+          {warnings.map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+      )}
+      <p className="cbnote">addresses resolve from a verified registry or your own text · the model never supplies them</p>
+    </div>
   );
 }
+
+// The wallet-level nuke verb lives in the avatar menu (Shell.tsx · NukeItem).

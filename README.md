@@ -27,7 +27,7 @@ your wallet (EIP-7702 smart account)
 
 ## How a payment actually works
 
-1. You sign in to the dashboard (Privy embedded wallet, Google login) and issue a card with terms.
+1. You sign in to the dashboard (Privy embedded wallet, Google login) and issue a card with terms, set by hand in the composer or drafted from a plain-language request by the Venice-powered NL compiler (the model only names tokens, protocols, and merchants; the server resolves every address from its own verified registry, and you still review and sign the draft).
 2. The dashboard compiles the terms into onchain caveats (delegation-framework enforcers), your wallet signs the delegation in the browser, the server stores it alongside a fresh agent key that holds nothing.
 3. You hand the card URL to any agent (one `claude mcp add`, a Cursor deeplink, a pasted connector URL).
 4. When the agent calls `pay`, the server validates the terms, then redeems the delegation through the 1Shot relayer: gasless, on Base mainnet, settled in USDC from your wallet.
@@ -50,7 +50,7 @@ MCP tools, served over Streamable HTTP. The exact set a card exposes matches its
 
 Refusals are typed (`over_period_limit`, `merchant_not_allowed`, `price_exceeds_max`, `exceeds_parent_terms`, `target_not_allowed`, `method_not_allowed`, ...) so agents can relay them honestly instead of guessing.
 
-**Contract cards.** A card can be scoped to specific contract targets + method selectors instead of (or alongside) a USDC budget. The agent calls `execute` with either `{target, method, args}` (the server ABI-encodes) or `{target, data}` raw calldata for tuple/array/multicall methods like Uniswap `exactInputSingle`. Targets and selectors outside the card's declared scope are refused before anything reaches the chain, and the on-chain `allowedTargets`/`allowedMethods` enforcers check the same scope again. Method signatures are normalized to their canonical form (`uint` -> `uint256`) so the encoder, the raw-data selector check, and the on-chain enforcer all agree. Safety on contract cards is the target/method allowlist plus `maxUses` and `expiry` (contract calls are not USDC-metered); pair contract scope with a `pay` cap in one composite card when you want both. Calls carry no native ETH value in v1 (the carved leaf caps value at 0 on-chain); payable-with-value is a planned extension.
+**Contract cards.** A card can be scoped to specific contract targets + method selectors instead of (or alongside) a USDC budget. The agent calls `execute` with either `{target, method, args}` (the server ABI-encodes) or `{target, data}` raw calldata for tuple/array/multicall methods like Uniswap `exactInputSingle`. Targets and selectors outside the card's declared scope are refused before anything reaches the chain, and the on-chain `allowedTargets`/`allowedMethods` enforcers check the same scope again. Method signatures are normalized to their canonical form (`uint` -> `uint256`) so the encoder, the raw-data selector check, and the on-chain enforcer all agree. Safety on contract cards is the target/method allowlist plus `maxUses` and `expiry` (contract calls are not USDC-metered); pair contract scope with a `pay` cap in one composite card when you want both. A contract card can also carry an **allowance token list** (`contract.tokens`: the only tokens it may `approve`, every approval exact-amount pinned on-chain) and a **per-trade ceiling** (`contract.perTradeMax`, capping each USDC approval; v1 enforces the ceiling on USDC legs only). Both narrow subset-only on sub-cards. Calls carry no native ETH value in v1 (the carved leaf caps value at 0 on-chain); payable-with-value is a planned extension.
 
 ## Connecting a card to an agent
 
@@ -88,7 +88,8 @@ packages/
 
 Key pieces:
 
-- **Caveat compiler** (`engine/src/compile.ts`): turns human terms (`{"pay": {"period": {"amount": "25", "seconds": 604800}}}`) into delegation-framework enforcer caveats.
+- **Caveat compiler** (`engine/src/compiler.ts`): turns human terms (`{"pay": {"period": {"amount": "25", "seconds": 604800}}}`) into delegation-framework enforcer caveats.
+- **NL compiler** (`server/src/venice/`): Venice AI turns a plain-language request into a plan of named entities + numbers; the server resolves every name against its own verified registry (model output can never place an address in a draft) and assembles a `CardTerms` draft for the user to review and sign.
 - **Issuance**: server prepares an unsigned delegation, the user's wallet signs it in the browser (prepare/finalize), so the server never holds the user's key for client-signed cards.
 - **Spend** (`engine/src/spend.ts`): validates terms server-side, then redeems the delegation chain through the 1Shot Public Relayer (`DelegationManager.redeemDelegations`), attaching the user's EIP-7702 authorization on first spend.
 - **Sub-cards**: ERC-7710 redelegations. Caps only narrow. Revoking a parent kills the subtree.
@@ -154,6 +155,8 @@ bun run typecheck        # per-package tsc
 | `REMIT_SELLER_PAYTO` | no | payout address for the built-in demo seller |
 | `REMIT_PAID_FETCH_ALLOW_LOCAL` | no | allow `paid_fetch` to hit local/private hosts (dev only) |
 | `REMIT_STRIPE_WEBHOOK_SECRET` | no | Stripe real-time auth webhook signing secret (test mode); unset = the fiat leg answers 503 (disabled) |
+| `VENICE_API_KEY` | no | enables `POST /cards/compile` (plain-language card drafting); unset = the compile endpoint refuses (disabled) |
+| `VENICE_MODEL` | with key | Venice model id for the NL compiler; pin it (the fallback default is unvalidated) |
 | `REMIT_DASHBOARD_BASE` | OAuth lane | dashboard origin that hosts the OAuth consent (card-picker) page (default `http://localhost:4071`) |
 | `REMIT_RECONCILE_INTERVAL_MS` | no | stuck-pending-charge reconcile sweep interval (default 300000; 0 disables) |
 | `REMIT_MCP_RATE_LIMIT` / `REMIT_MCP_BAD_SECRET_LIMIT` | no | per-card and per-IP-bad-secret request ceilings per minute (defaults 240 / 30) |
@@ -180,4 +183,4 @@ The dashboard carries **no shared secret**: every API call sends the signed-in u
 
 ## Built for the MetaMask Smart Accounts x 1Shot API x Venice AI Dev Cook Off (2026)
 
-remit targets the x402 + ERC-7710 track: one delegation governing real crypto payments (x402/USDC on Base mainnet, live) and a simulated fiat card leg (Stripe Issuing test mode), with sub-card redelegation and cascade revocation as the centerpiece. Everything in this README, including the mainnet transactions, is reproducible end to end.
+remit targets the x402 + ERC-7710 track: one delegation governing real crypto payments (x402/USDC on Base mainnet, live) and a simulated fiat card leg (Stripe Issuing test mode), with sub-card redelegation and cascade revocation as the centerpiece, and Venice AI as the natural-language card compiler in the dashboard. Everything in this README, including the mainnet transactions, is reproducible end to end.

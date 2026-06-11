@@ -10,7 +10,7 @@
 // Merchant pins NEVER compile into the root (Phase-B live: they collide with the
 // mandatory fee leg) -> carve-layer policy.
 
-import { pad, parseAbiItem, toFunctionSignature, toHex, type Address, type Hex } from "viem";
+import { pad, parseAbiItem, toFunctionSelector, toFunctionSignature, toHex, type Address, type Hex } from "viem";
 import { getSmartAccountsEnvironment, ScopeType, createCaveat } from "@metamask/smart-accounts-kit";
 import { createCaveatBuilder } from "@metamask/smart-accounts-kit/utils";
 import {
@@ -29,6 +29,8 @@ import type {
 } from "./types";
 
 const TRANSFER_SIG = "transfer(address,uint256)";
+export const APPROVE_SIG = "approve(address,uint256)";
+const INCREASE_ALLOWANCE_SIG = "increaseAllowance(address,uint256)";
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 // Human-readable ABI signature, tuple params allowed: "exactInputSingle((address,uint24,...))"
 const SELECTOR_RE = /^[a-zA-Z_]\w*\(.*\)$/;
@@ -73,6 +75,17 @@ function invalid(message: string, field?: string): never {
   throw new RefusalError("invalid_terms", message, field ? { field } : undefined);
 }
 
+/** Parse a request-supplied USD amount at a validation site: malformed input ("abc",
+ * 7+ decimals) raises a typed invalid_terms refusal instead of money.ts's bare Error,
+ * which would surface as a 500 instead of a 422. */
+function usdAtoms(amount: string, field: string): bigint {
+  try {
+    return usdcToAtoms(amount);
+  } catch {
+    invalid(`${field} must be a USDC amount with at most 6 decimals`, field);
+  }
+}
+
 export function validateTerms(terms: CardTerms, now: number): void {
   if (!terms.pay && !terms.contract) {
     invalid("card needs at least one capability: pay and/or contract");
@@ -81,49 +94,71 @@ export function validateTerms(terms: CardTerms, now: number): void {
     const { period, lifetime } = terms.pay;
     if (!period && !lifetime) invalid("pay needs period and/or lifetime cap", "pay");
     if (period) {
-      if (usdcToAtoms(period.amount) <= 0n) invalid("period amount must be > 0", "pay.period.amount");
+      if (usdAtoms(period.amount, "pay.period.amount") <= 0n) invalid("period amount must be > 0", "pay.period.amount");
       if (!Number.isInteger(period.seconds) || period.seconds < 60) {
         invalid("period must be >= 60 seconds", "pay.period.seconds");
       }
     }
-    if (lifetime && usdcToAtoms(lifetime.amount) <= 0n) {
+    if (lifetime && usdAtoms(lifetime.amount, "pay.lifetime.amount") <= 0n) {
       invalid("lifetime amount must be > 0", "pay.lifetime.amount");
     }
   }
-  if (terms.contract) {
-    const { targets, selectors } = terms.contract;
-    if (!targets?.length) invalid("contract scope needs at least one target", "contract.targets");
-    if (!selectors?.length) invalid("contract scope needs at least one selector", "contract.selectors");
-    for (const t of targets) if (!ADDRESS_RE.test(t)) invalid(`bad target address: ${t}`, "contract.targets");
-    for (const s of selectors) {
-      if (!SELECTOR_RE.test(s)) invalid(`bad method signature: ${s}`, "contract.selectors");
-      // SELECTOR_RE is looser than the ABI parser; reject signatures the parser can't
-      // read (e.g. "withdraw(UINT)") rather than silently storing a phantom on-chain
-      // selector that no real call matches.
-      try {
-        parseAbiItem(`function ${s}`);
-      } catch {
-        invalid(`unparseable method signature: ${s}`, "contract.selectors");
-      }
-    }
-    // Normalize to canonical signatures (all parse now) so encode, raw-data check, and
-    // on-chain allowedMethods agree (uint -> uint256, whitespace stripped). NOTE: this
-    // mutates terms.contract in place; callers pass single-use request bodies and the
-    // store re-deserializes per read, so aliasing is safe (double-canonicalize is a no-op).
-    terms.contract.selectors = selectors.map(canonicalSelector);
-  }
+  if (terms.contract) validateAndNormalizeContract(terms.contract);
   if (terms.expiry !== undefined) {
     if (!Number.isInteger(terms.expiry) || terms.expiry <= now) invalid("expiry must be in the future", "expiry");
   }
   if (terms.maxUses !== undefined) {
     if (!Number.isInteger(terms.maxUses) || terms.maxUses < 1) invalid("maxUses must be >= 1", "maxUses");
   }
-  if (terms.perTxMax !== undefined && usdcToAtoms(terms.perTxMax) <= 0n) {
+  if (terms.perTxMax !== undefined && usdAtoms(terms.perTxMax, "perTxMax") <= 0n) {
     invalid("perTxMax must be > 0", "perTxMax");
   }
   if (terms.merchants !== undefined) {
     if (!terms.merchants.length) invalid("merchant lock needs at least one address", "merchants");
     for (const m of terms.merchants) if (!ADDRESS_RE.test(m)) invalid(`bad merchant address: ${m}`, "merchants");
+  }
+}
+
+/** Validate + normalize a contract scope IN PLACE: canonical selectors, plus the
+ * tokens union (a declared allowance token must be a callable target with approve in
+ * scope, so both are unioned in). Idempotent; runs at validateTerms and again at
+ * attenuation BEFORE the parent-subset checks, so a child can't smuggle scope in via
+ * `tokens` that the post-check union would silently add. */
+export function validateAndNormalizeContract(ct: ContractTerms): void {
+  const { targets, selectors, tokens, perTradeMax } = ct;
+  if (!targets?.length) invalid("contract scope needs at least one target", "contract.targets");
+  if (!selectors?.length) invalid("contract scope needs at least one selector", "contract.selectors");
+  for (const t of targets) if (!ADDRESS_RE.test(t)) invalid(`bad target address: ${t}`, "contract.targets");
+  for (const s of selectors) {
+    if (!SELECTOR_RE.test(s)) invalid(`bad method signature: ${s}`, "contract.selectors");
+    // SELECTOR_RE is looser than the ABI parser; reject signatures the parser can't
+    // read (e.g. "withdraw(UINT)") rather than silently storing a phantom on-chain
+    // selector that no real call matches.
+    try {
+      parseAbiItem(`function ${s}`);
+    } catch {
+      invalid(`unparseable method signature: ${s}`, "contract.selectors");
+    }
+  }
+  // Normalize to canonical signatures (all parse now) so encode, raw-data check, and
+  // on-chain allowedMethods agree (uint -> uint256, whitespace stripped). NOTE: this
+  // mutates the contract terms in place; callers pass single-use request bodies and the
+  // store re-deserializes per read, so aliasing is safe (double-canonicalize is a no-op).
+  ct.selectors = selectors.map(canonicalSelector);
+  if (tokens !== undefined) {
+    if (!tokens.length) invalid("token list needs at least one address", "contract.tokens");
+    for (const t of tokens) if (!ADDRESS_RE.test(t)) invalid(`bad token address: ${t}`, "contract.tokens");
+    const have = new Set(ct.targets.map((t) => t.toLowerCase()));
+    for (const t of tokens) {
+      if (!have.has(t.toLowerCase())) {
+        ct.targets = [...ct.targets, t];
+        have.add(t.toLowerCase());
+      }
+    }
+    if (!ct.selectors.includes(APPROVE_SIG)) ct.selectors = [...ct.selectors, APPROVE_SIG];
+  }
+  if (perTradeMax !== undefined && usdAtoms(perTradeMax, "contract.perTradeMax") <= 0n) {
+    invalid("perTradeMax must be > 0", "contract.perTradeMax");
   }
 }
 
@@ -308,6 +343,62 @@ export function declaredContractScope(terms: ContractTerms) {
   return { targets: terms.targets, selectors: terms.selectors };
 }
 
+// ---------------------------------------------------------------------------
+// ERC-20 allowance calls (approve / increaseAllowance): decode + on-chain pins
+// ---------------------------------------------------------------------------
+
+const APPROVE_LIKE: Record<string, string> = Object.fromEntries(
+  [APPROVE_SIG, INCREASE_ALLOWANCE_SIG].map((sig) => [toFunctionSelector(sig).toLowerCase(), sig]),
+);
+
+export type AllowanceCall = {
+  /** the token contract (the execution target) */
+  token: Address;
+  /** who may pull the allowance */
+  spender: Address;
+  amountAtoms: bigint;
+  /** the canonical signature that was called (approve or increaseAllowance) */
+  sig: string;
+};
+
+/** Decode an execution as an ERC-20 allowance grant, or null if it's another method.
+ * Calldata must be the exact canonical shape (selector + two 32-byte words): trailing
+ * bytes would survive the byte-window pins AND the token's decoder, so refuse them. */
+export function decodeAllowanceCall(e: { target: Address; data: Hex }): AllowanceCall | null {
+  const data = (e.data ?? "0x").toLowerCase();
+  const sig = APPROVE_LIKE[data.slice(0, 10)];
+  if (!sig) return null;
+  if (data.length !== 2 + 8 + 64 + 64) {
+    throw new RefusalError("invalid_terms", "malformed allowance calldata (must be selector + spender + amount)");
+  }
+  const spenderWord = data.slice(10, 74);
+  if (!/^0{24}/.test(spenderWord)) {
+    throw new RefusalError("invalid_terms", "malformed allowance calldata (spender is not an address)");
+  }
+  return {
+    token: e.target,
+    spender: ("0x" + spenderWord.slice(24)) as Address,
+    amountAtoms: BigInt("0x" + data.slice(74, 138)),
+    sig,
+  };
+}
+
+/** AllowedCalldata byte-window pins for ONE allowance execution: spender at offset 4,
+ * amount at offset 36 (32-byte padded exact values). The pinned leaf must govern ONLY
+ * the allowance execution — a caveat is evaluated against every execution in its
+ * redemption item (Phase-B SEND #3 + probe-multiitem, live-verified Jun 10 2026). */
+export function allowancePinCaveats(call: AllowanceCall, chainId: ChainId = CHAIN_ID): WireCaveat[] {
+  return builder(chainId)
+    .addCaveat("allowedCalldata", { startIndex: 4, value: pad(call.spender, { size: 32 }) })
+    .addCaveat("allowedCalldata", { startIndex: 36, value: pad(toHex(call.amountAtoms), { size: 32 }) })
+    .build() as WireCaveat[];
+}
+
+/** The leaf scope for a pinned allowance item: exactly [token] x [the called sig]. */
+export function allowanceLeafScope(call: AllowanceCall) {
+  return { type: ScopeType.FunctionCall, targets: [call.token], selectors: [call.sig] } as const;
+}
+
 /** Canonical function signature (uint -> uint256, whitespace stripped) so the
  * method-encode path, the raw-data 4-byte selector check, and the on-chain
  * allowedMethods enforcer all key off the same selector. Falls back to the input
@@ -361,18 +452,18 @@ export function attenuate(parent: CardTerms, remaining: ParentRemaining, child: 
       }
     } else {
       if (out.pay.period && parent.pay.period) {
-        if (usdcToAtoms(out.pay.period.amount) > usdcToAtoms(parent.pay.period.amount)) {
+        if (usdAtoms(out.pay.period.amount, "pay.period.amount") > usdcToAtoms(parent.pay.period.amount)) {
           exceeds("pay.period.amount", `child period cap exceeds parent's ${parent.pay.period.amount}`);
         }
       }
       if (out.pay.period && !parent.pay.period && parent.pay.lifetime) {
-        if (usdcToAtoms(out.pay.period.amount) > usdcToAtoms(parent.pay.lifetime.amount)) {
+        if (usdAtoms(out.pay.period.amount, "pay.period.amount") > usdcToAtoms(parent.pay.lifetime.amount)) {
           exceeds("pay.period.amount", `child period cap exceeds parent's lifetime ${parent.pay.lifetime.amount}`);
         }
       }
       if (out.pay.lifetime && parent.pay.lifetime) {
         const cap = remaining.lifetimeRemainingAtoms ?? usdcToAtoms(parent.pay.lifetime.amount);
-        if (usdcToAtoms(out.pay.lifetime.amount) > cap) {
+        if (usdAtoms(out.pay.lifetime.amount, "pay.lifetime.amount") > cap) {
           exceeds("pay.lifetime.amount", `child lifetime cap exceeds parent's remaining`);
         }
       }
@@ -384,6 +475,10 @@ export function attenuate(parent: CardTerms, remaining: ParentRemaining, child: 
   // --- contract: subset-only, never inherited ---
   if (out.contract) {
     if (!parent.contract) exceeds("contract", "parent card has no contract capability");
+    // Normalize FIRST (canonical selectors + tokens->targets/approve union) so the
+    // subset checks below see the child's REAL surface: a child declaring only
+    // `tokens` would otherwise grow targets/selectors after the checks passed.
+    validateAndNormalizeContract(out.contract);
     const pTargets = new Set(parent.contract.targets.map((t) => t.toLowerCase()));
     const pSelectors = new Set(parent.contract.selectors.map(canonicalSelector));
     for (const t of out.contract.targets) {
@@ -391,6 +486,32 @@ export function attenuate(parent: CardTerms, remaining: ParentRemaining, child: 
     }
     for (const s of out.contract.selectors) {
       if (!pSelectors.has(canonicalSelector(s))) exceeds("contract.selectors", `selector ${s} not in parent scope`);
+    }
+    // tokens: when the parent restricts allowance tokens, a child list must stay inside
+    // it. NEVER inherited when silent: normalization unions tokens into targets +
+    // approve into selectors, so inheriting would grant a silent child allowance
+    // capability it didn't ask for. The ancestor chain-walk at spend time enforces the
+    // parent's gate on the whole subtree regardless.
+    if (parent.contract.tokens && out.contract.tokens) {
+      const pt = new Set(parent.contract.tokens.map((t) => t.toLowerCase()));
+      for (const t of out.contract.tokens) {
+        if (!pt.has(t.toLowerCase())) exceeds("contract.tokens", `token ${t} not in parent token list`);
+      }
+    }
+    // perTradeMax: tightest governs; inherit when silent, but only onto a child that
+    // can actually grant allowances (approve in its normalized scope). A no-approve
+    // child can never trigger the cap (nor can any of its descendants, since the
+    // selector-subset rule stops them from re-adding approve), so inheriting would
+    // just render a dead cap in the UI. The ancestor walk at spend time enforces the
+    // parent's cap on the whole subtree regardless.
+    if (parent.contract.perTradeMax !== undefined) {
+      if (out.contract.perTradeMax === undefined) {
+        if (out.contract.selectors.includes(APPROVE_SIG)) {
+          out.contract.perTradeMax = parent.contract.perTradeMax;
+        }
+      } else if (usdcToAtoms(out.contract.perTradeMax) > usdcToAtoms(parent.contract.perTradeMax)) {
+        exceeds("contract.perTradeMax", `child perTradeMax exceeds parent's ${parent.contract.perTradeMax}`);
+      }
     }
   }
 

@@ -7,11 +7,22 @@
 
 import { toFunctionSelector, type Address, type Hex } from "viem";
 import { CHAIN_ID, CHAINS, FEE_COLLECTOR, publicClient, type ChainId } from "./chains";
-import { applyOrArgs, canonicalSelector, contractLeafScope, declaredContractScope, payLeafScope } from "./compiler";
+import {
+  allowanceLeafScope,
+  allowancePinCaveats,
+  applyOrArgs,
+  canonicalSelector,
+  contractLeafScope,
+  declaredContractScope,
+  decodeAllowanceCall,
+  payLeafScope,
+  type AllowanceCall,
+} from "./compiler";
 import { withAgentAccount } from "./custody";
 import {
   carveLeafDelegation,
   erc20TransferExecution,
+  feeExecution,
   has7702Code,
   signWithPrivateKey,
 } from "./delegations";
@@ -162,6 +173,10 @@ export function validateSpend(
     }
     const execs = req.workExecutions ?? [];
     if (!execs.length) throw new RefusalError("invalid_terms", "execute requires at least one call");
+    // ERC-20 allowance grants (approve/increaseAllowance) get extra gates here and
+    // exact on-chain pins downstream; throws invalid_terms on malformed calldata.
+    const allowances = execs.map((e) => decodeAllowanceCall(e));
+    const usdcAddr = CHAINS[deps.chainId ?? CHAIN_ID].usdc.toLowerCase();
     for (const c of chain) {
       if (!c.terms.contract) continue; // pay-only ancestors govern via OR groups / caps on-chain
       // Validate against the DECLARED scope, not the fee-safe one: a card scoped to
@@ -180,7 +195,7 @@ export function validateSpend(
           }
         }),
       );
-      for (const e of execs) {
+      for (const [i, e] of execs.entries()) {
         if (!allowedTargets.has(e.target.toLowerCase())) {
           throw new RefusalError("target_not_allowed", `target ${e.target} is outside the card's contract scope`, {
             card_id: c.id,
@@ -196,6 +211,31 @@ export function validateSpend(
         }
         if (e.value && e.value !== "0") {
           throw new RefusalError("invalid_terms", "native value is not supported on contract cards");
+        }
+        // allowance gates: spender stays inside the declared call surface; token list +
+        // per-trade USDC cap apply per ancestor that declares them (tightest governs)
+        const al = allowances[i];
+        if (!al) continue;
+        if (!allowedTargets.has(al.spender.toLowerCase())) {
+          throw new RefusalError("spender_not_allowed", `allowance spender ${al.spender} is outside the card's contract scope`, {
+            card_id: c.id,
+            spender: al.spender,
+          });
+        }
+        const tokens = c.terms.contract.tokens;
+        if (tokens && !tokens.some((t) => t.toLowerCase() === al.token.toLowerCase())) {
+          throw new RefusalError("token_not_allowed", `token ${al.token} is not on the card's allowance token list`, {
+            card_id: c.id,
+            token: al.token,
+          });
+        }
+        const cap = c.terms.contract.perTradeMax;
+        if (cap !== undefined && al.token.toLowerCase() === usdcAddr && al.amountAtoms > usdcToAtoms(cap)) {
+          throw new RefusalError("per_trade_exceeded", `allowance exceeds the per-trade max of ${cap} USDC`, {
+            card_id: c.id,
+            per_trade_max: cap,
+            requested: atomsToUsdc(al.amountAtoms),
+          });
         }
       }
     }
@@ -248,14 +288,19 @@ export function validateSpend(
 // Estimate-error -> refusal mapping (chain said no; translate when we can)
 // ---------------------------------------------------------------------------
 
-function refusalFromEstimateError(err: string): RefusalError | null {
+function refusalFromEstimateError(err: string, mode: SpendMode): RefusalError | null {
   if (/PeriodTransferEnforcer/i.test(err)) return new RefusalError("over_period_limit", `chain refused: ${err}`);
   if (/TransferAmountEnforcer/i.test(err)) return new RefusalError("over_lifetime_limit", `chain refused: ${err}`);
   if (/TimestampEnforcer/i.test(err)) return new RefusalError("card_expired", `chain refused: ${err}`);
   if (/LimitedCallsEnforcer/i.test(err)) return new RefusalError("uses_exhausted", `chain refused: ${err}`);
   if (/AllowedTargetsEnforcer/i.test(err)) return new RefusalError("target_not_allowed", `chain refused: ${err}`);
   if (/AllowedMethodsEnforcer/i.test(err)) return new RefusalError("method_not_allowed", `chain refused: ${err}`);
-  if (/AllowedCalldataEnforcer/i.test(err)) return new RefusalError("merchant_not_allowed", `chain refused: ${err}`);
+  // pay-mode calldata caveats are recipient pins; contract-mode ones are the server's
+  // OWN allowance pins (built from the validated request), so a mismatch there is an
+  // engine fault, not an agent-facing refusal -> fall through to EngineError.
+  if (/AllowedCalldataEnforcer/i.test(err)) {
+    return mode === "pay" ? new RefusalError("merchant_not_allowed", `chain refused: ${err}`) : null;
+  }
   return null;
 }
 
@@ -367,30 +412,70 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
 
   const chainDelegations = chain.map((c) => delegationForMode(c, req.mode));
 
+  // Per-redemption transaction items. Pay mode = one item (work + fee), exactly the
+  // proven shape. Contract mode ISOLATES every ERC-20 allowance call in its own item
+  // behind a pinned leaf (exact spender + amount): a caveat is evaluated against every
+  // execution in its item, so the pin must never see the swap/fee legs (Phase-B SEND #3
+  // + probe-multiitem, live-verified). All items ride ONE relayer send -> one atomic tx.
+  const planItems = (): Array<{ executions: WireExecution[]; pin: AllowanceCall | null }> => {
+    if (req.mode === "pay") return [{ executions: [...workExecutions], pin: null }];
+    const items: Array<{ executions: WireExecution[]; pin: AllowanceCall | null }> = [];
+    let run: WireExecution[] = [];
+    for (const e of workExecutions) {
+      const allowance = decodeAllowanceCall(e);
+      if (allowance) {
+        if (run.length) {
+          items.push({ executions: run, pin: null });
+          run = [];
+        }
+        items.push({ executions: [e], pin: allowance });
+      } else {
+        run.push(e);
+      }
+    }
+    if (run.length) items.push({ executions: run, pin: null });
+    return items;
+  };
+
   // estimate loop: carve -> estimate -> (fee mismatch? rebuild) -> send
   let lastError: string | null = null;
   for (let attempt = 0; attempt < ESTIMATE_RETRIES; attempt++) {
-    const executions = [...workExecutions, erc20TransferExecution(CHAINS[chainId].usdc, FEE_COLLECTOR, feeAtoms)];
+    const items = planItems();
+    // the fee leg rides the last item if unpinned, else its own normal-leaf item
+    // (a pinned item must hold ONLY its allowance execution)
+    const feeExec = feeExecution(FEE_COLLECTOR, feeAtoms, chainId);
+    const last = items.at(-1);
+    if (last && !last.pin) last.executions.push(feeExec);
+    else items.push({ executions: [feeExec], pin: null });
 
-    const scope =
-      req.mode === "pay"
-        ? payLeafScope(amountAtoms + feeAtoms, chainId)
-        : contractLeafScope(card.terms.contract!, chainId);
-
-    const leaf = await withAgentAccount(card.k_agent_enc, async (_account, pk) =>
-      signWithPrivateKey(
-        pk,
-        carveLeafDelegation({ parent: chainDelegations[0]!, from: card.k_agent_address, scope: scope as never, chainId }),
-        chainId,
-      ),
-    );
-
-    const permissionContext = [leaf, ...chainDelegations];
-    const est = await deps.relayer.estimate([{ permissionContext, executions }], authorizationList);
+    const transactions = [];
+    for (const item of items) {
+      const scope =
+        req.mode === "pay"
+          ? payLeafScope(amountAtoms + feeAtoms, chainId)
+          : item.pin
+            ? allowanceLeafScope(item.pin)
+            : contractLeafScope(card.terms.contract!, chainId);
+      const leaf = await withAgentAccount(card.k_agent_enc, async (_account, pk) =>
+        signWithPrivateKey(
+          pk,
+          carveLeafDelegation({
+            parent: chainDelegations[0]!,
+            from: card.k_agent_address,
+            scope: scope as never,
+            extraCaveats: item.pin ? allowancePinCaveats(item.pin, chainId) : undefined,
+            chainId,
+          }),
+          chainId,
+        ),
+      );
+      transactions.push({ permissionContext: [leaf, ...chainDelegations], executions: item.executions });
+    }
+    const est = await deps.relayer.estimate(transactions, authorizationList);
 
     if (!est.success) {
       lastError = est.error;
-      const refusal = est.error ? refusalFromEstimateError(est.error) : null;
+      const refusal = est.error ? refusalFromEstimateError(est.error, req.mode) : null;
       if (refusal) throw refusal;
       throw new EngineError("estimate", `relayer estimate failed: ${est.error ?? "unknown"}`);
     }
@@ -446,7 +531,7 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
 
     let requestId: string;
     try {
-      requestId = await deps.relayer.send([{ permissionContext, executions }], est.context, authorizationList);
+      requestId = await deps.relayer.send(transactions, est.context, authorizationList);
     } catch (e) {
       store.updateCharge(chargeId, { status: "failed" });
       throw e;

@@ -14,9 +14,11 @@ import { useRemit } from "../useRemit";
 
 export default function ConnectPage() {
   return (
-    <Suspense fallback={<div className="mono">loading…</div>}>
-      <Consent />
-    </Suspense>
+    <main className="narrow">
+      <Suspense fallback={<div className="mono">loading…</div>}>
+        <Consent />
+      </Suspense>
+    </main>
   );
 }
 
@@ -92,7 +94,7 @@ function Consent() {
         <p className="mono" style={{ color: "#666" }}>
           an agent is asking for spending authority · sign in to pick which card it gets
         </p>
-        <button onClick={login} data-testid="login">
+        <button className="primary" onClick={login} data-testid="login">
           sign in
         </button>
       </div>
@@ -118,7 +120,7 @@ function Consent() {
         An app calling itself <b>{info.client_name ?? "an MCP client"}</b> is requesting access. If you
         approve, the authorization will be sent to:
       </p>
-      <p className="mono" style={{ margin: "6px 0", padding: "8px 10px", background: "#fff8e1", border: "1px solid #f0c36d", borderRadius: 6 }}>
+      <p className="mono" style={{ margin: "6px 0", padding: "10px 12px", background: "var(--surface-warm)", border: "1px solid var(--hairline)", borderLeft: "3px solid var(--accent)", borderRadius: 8, color: "var(--ink)" }}>
         → <b>{info.redirect_host}</b>
       </p>
       <p className="mono" style={{ color: "#666", fontSize: 12 }}>
@@ -141,8 +143,9 @@ function Consent() {
                   alignItems: "center",
                   gap: 10,
                   padding: 10,
-                  border: picked === c.card_id ? "1px solid #1f6feb" : "1px solid #ddd",
-                  borderRadius: 6,
+                  border: picked === c.card_id ? "1px solid var(--accent)" : "1px solid var(--hairline)",
+                  boxShadow: picked === c.card_id ? "0 0 0 3px var(--accent-tint)" : undefined,
+                  borderRadius: 10,
                   cursor: "pointer",
                 }}
               >
@@ -167,7 +170,7 @@ function Consent() {
           </div>
           {err && <p className="err">{err}</p>}
           <div className="row" style={{ gap: 8 }}>
-            <button onClick={approve} disabled={!picked || phase !== "idle"} data-testid="approve">
+            <button className="primary" onClick={approve} disabled={!picked || phase !== "idle"} data-testid="approve">
               {phase === "idle" ? "grant this card" : phase === "submitting" ? "granting…" : "returning to your agent…"}
             </button>
             <button onClick={deny} disabled={phase !== "idle"} data-testid="deny">

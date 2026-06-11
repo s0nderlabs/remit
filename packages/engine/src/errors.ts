@@ -17,6 +17,9 @@ export const REFUSAL_CODES = [
   "not_your_subcard",
   "target_not_allowed",
   "method_not_allowed",
+  "spender_not_allowed",
+  "token_not_allowed",
+  "per_trade_exceeded",
   "price_exceeds_max",
   "invalid_terms",
 ] as const;

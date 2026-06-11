@@ -6,6 +6,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
 import { KeyedMutex, Relayer, Store, type DelegationSigner, type FinalizeOpsDeps, type SpendDeps } from "@remit/engine";
 import { makePrivyVerifier, type PrivyVerifier } from "./api/privy";
+import { veniceChat, type ChatFn } from "./venice/client";
 
 export type AppDeps = {
   store: Store;
@@ -21,6 +22,10 @@ export type AppDeps = {
   spendOverrides?: Partial<SpendDeps>;
   /** test seams for the client-signed admin ops (codeCheck/confirmViaChain/nonce) */
   opsOverrides?: Partial<FinalizeOpsDeps>;
+  /** Venice NL->CardTerms compiler brain; null/absent = /cards/compile disabled (no VENICE_API_KEY) */
+  veniceChat?: ChatFn | null;
+  /** Basescan API key for verified-contract labels in compiled drafts (optional) */
+  basescanKey?: string | null;
 };
 
 /** Numeric env with a default that survives the empty string. `Number(x ?? d)` is a trap:
@@ -46,6 +51,8 @@ export function realDeps(): AppDeps {
     adminToken: process.env.REMIT_ADMIN_TOKEN ?? null,
     verifyPrivyToken: privyAppId ? makePrivyVerifier(privyAppId) : null,
     spendMutex: new KeyedMutex(),
+    veniceChat: process.env.VENICE_API_KEY ? veniceChat() : null,
+    basescanKey: process.env.BASESCAN_API_KEY ?? null,
   };
 }
 

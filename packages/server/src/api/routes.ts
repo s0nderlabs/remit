@@ -46,6 +46,8 @@ import { cardUrl } from "../mcp/server";
 import { appendRedirectParams } from "../oauth/routes";
 import type { OAuthStore } from "../oauth/store";
 import { onboardProofMessage } from "./privy";
+import { compileIntent } from "../venice/compiler";
+import { basescanLookup, registryResolvers } from "../venice/resolvers";
 
 /** Privy-lane user id convention: the embedded (A_user) address, lowercased. One
  * user row per embedded wallet. */
@@ -278,6 +280,25 @@ export function apiRoutes(deps: AppDeps, oauth: OAuthStore): Hono<{ Variables: {
       // corrected one until the TTL expires (the DB primary key backstops any replay)
       pending.delete(body.prepare_id);
       return { card_id: issued.cardId, card_url: cardUrl(issued.secret), terms: issued.terms };
+    }),
+  );
+
+  // ---- Venice NL compiler: intent -> DRAFT CardTerms (never issues) ----
+  // Any authed user may draft; the draft only prefills the composer. Addresses come
+  // exclusively from the trusted resolvers or the user's own text (compiler.ts), so a
+  // draft can't smuggle a poisoned address even if the model tries.
+  app.post("/cards/compile", (c) =>
+    handle(c, async () => {
+      if (!deps.veniceChat) {
+        throw new EngineError("compile", "compiler disabled (no VENICE_API_KEY configured)");
+      }
+      const body = (await c.req.json()) as { intent?: string };
+      const intent = body.intent?.trim();
+      if (!intent) throw new RefusalError("invalid_terms", "intent required");
+      if (intent.length > 2000) throw new RefusalError("invalid_terms", "intent too long (max 2000 chars)");
+      const resolvers = registryResolvers({ basescanLookup: basescanLookup(deps.basescanKey ?? undefined) });
+      const result = await compileIntent(intent, { chat: deps.veniceChat, resolvers, now });
+      return { draft: result.draft, labels: result.labels, warnings: result.warnings };
     }),
   );
 

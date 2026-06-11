@@ -37,7 +37,7 @@ import {
 import type { AppDeps } from "../deps";
 import { spendDeps, spendKey } from "../deps";
 
-const SERVER_INFO = { name: "remit", version: "0.5.0" };
+const SERVER_INFO = { name: "remit", version: "0.6.0" };
 
 // ---------------------------------------------------------------------------
 // Result helpers
@@ -270,7 +270,7 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
       {
         title: "Execute scoped contract calls",
         description:
-          "Run one or more contract calls allowed by this card's scope, atomically in one redemption (e.g. approve + swap). Targets and methods outside the card's scope are refused. Pass simple calls as method + args (the server encodes calldata); pass complex calls (tuple/array/multicall args, e.g. Uniswap exactInputSingle) as raw `data` (the 4-byte selector is still checked against the allowlist). Calls carry no native ETH value (value is 0).",
+          "Run one or more contract calls allowed by this card's scope, atomically in one redemption (e.g. approve + swap). Targets and methods outside the card's scope are refused. Pass simple calls as method + args (the server encodes calldata); pass complex calls (tuple/array/multicall args, e.g. Uniswap exactInputSingle) as raw `data` (the 4-byte selector is still checked against the allowlist). ERC-20 allowance calls (approve/increaseAllowance) are extra-gated: the spender must be in the card's scope, the token must be on the card's token list (when one is set), USDC allowances respect perTradeMax (per_trade_exceeded), and every allowance is pinned on-chain to the exact spender + amount you requested. Calls carry no native ETH value (value is 0).",
         inputSchema: {
           calls: z
             .array(
@@ -333,6 +333,12 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
                 .object({
                   targets: z.array(z.string().regex(/^0x[0-9a-fA-F]{40}$/)).min(1),
                   selectors: z.array(z.string()).min(1),
+                  tokens: z
+                    .array(z.string().regex(/^0x[0-9a-fA-F]{40}$/))
+                    .min(1)
+                    .optional()
+                    .describe("ERC-20 tokens the child may grant allowances on; must be a subset of this card's list when one is set"),
+                  perTradeMax: z.string().optional().describe("per-allowance USDC ceiling for the child; <= this card's"),
                 })
                 .optional()
                 .describe("contract scope for the child; targets AND selectors must be a SUBSET of this card's"),

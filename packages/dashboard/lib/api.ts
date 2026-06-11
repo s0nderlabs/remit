@@ -38,13 +38,41 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+export type ContractTermsInput = {
+  targets: string[];
+  selectors: string[];
+  /** ERC-20 tokens the card may grant allowances on (#42). Unioned into targets server-side. */
+  tokens?: string[];
+  /** per-allowance USDC ceiling (#42). */
+  perTradeMax?: string;
+};
+
 export type CardTermsInput = {
   pay?: { period?: { amount: string; seconds: number }; lifetime?: { amount: string } };
+  /** contract scope: enables the agent's `execute` tool surface (swaps, approvals, calls). */
+  contract?: ContractTermsInput;
   expiry?: number;
   maxUses?: number;
   perTxMax?: string;
   merchants?: string[];
   subcards?: boolean;
+};
+
+/** A resolved entity in a compiled draft: a human label + provenance for an address the
+ * user reviews instead of raw hex (#43). */
+export type CompileLabel = {
+  query: string;
+  address: string;
+  label: string;
+  kind: "token" | "protocol" | "verified_contract" | "raw_address";
+  source: "registry" | "basescan" | "user_input";
+  decimals?: number;
+};
+
+export type CompileResult = {
+  draft: CardTermsInput | null;
+  labels: CompileLabel[];
+  warnings: string[];
 };
 
 export type CardState = {
@@ -94,6 +122,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ prepare_id: prepareId, signature }),
     }),
+
+  // --- Venice NL compiler: free-text intent -> DRAFT CardTerms (#43; never issues) ---
+  compile: (intent: string) =>
+    call<CompileResult>("/cards/compile", { method: "POST", body: JSON.stringify({ intent }) }),
 
   // --- reads + server-side controls (scoped to the embedded-wallet userId) ---
   tree: (userId: string) => call<{ tree: TreeNode[] }>(`/tree?userId=${encodeURIComponent(userId)}`),
