@@ -2,6 +2,30 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.8.0] - 2026-06-11
+
+The Stripe demo lane: the simulated Visa leg becomes triggerable, spendable by agents, and (new) settled on-chain. Shipped through a 3-reviewer pre-release pass (11 findings fixed, 5 accepted with rationale) and a live drill: real Stripe test-mode authorizations end to end, three real USDC settlements on Base mainnet.
+
+### Added
+
+- **On-chain fiat settlement** (`REMIT_FIAT_SETTLEMENT=1`): an approved Visa authorization now settles as a REAL delegated USDC transfer from the user's wallet to `REMIT_SETTLEMENT_ADDRESS` through the same delegation and relayer as the crypto leg, so the on-chain enforcers count BOTH rails against one budget. The webhook's 2s decision stays cache-only; a settlement executor drives the webhook's own charge row through the spend pipeline afterwards (one row, no double count; fee headroom reserved at decision time and held in the books). A fiat row never releases its budget: terminal settlement problems park it `settlement_unconfirmed` and freeze the card. Crash-safe: a pre-broadcast claim makes re-drives impossible, and the reconcile sweep resolves ambiguous sends from chain truth.
+- **`fiat_pay` MCP tool**: the agent buys over Visa rails (simulated, Stripe test-mode Issuing) against the same budget as its crypto spends; declines carry the real refusal reason; with settlement on, the receipt carries the on-chain tx hash.
+- **`card_credentials` MCP tool**: reveals the linked test-mode virtual Visa (number/expiry/cvc) so an agent can check out at a merchant like any human shopper.
+- **Demo merchant** ("s0nder supply co."): `/shop` page in the dashboard plus `/shop/products` + `/shop/checkout` server routes. A generic storefront that accepts the test Visa: card matched cheap-key-first (last4 + expiry) then constant-time full compare, rate-limited, PANs never echoed or logged.
+- **Stripe REST client** (fetch + form encoding, no SDK) with a hard test-mode-only key gate, and a decision cache so in-process callers surface the webhook's actual approve/decline reason.
+
+### Changed
+
+- Fiat charges persist as kind `fiat` (was `admin`), so the dashboard activity feed renders the fiat rail pill, with the merchant name in the memo.
+- Authorization decisions now decline cards carrying an on-chain merchant whitelist (`merchant_scoped_card`): a card-network merchant cannot satisfy an address whitelist.
+- Stripe's own pre-webhook decline reasons (e.g. `insufficient_funds` from the test Issuing balance) surface honestly through the tool and shop responses.
+
+### Validated (live, Jun 11 2026)
+
+- Webhook -> approval -> on-chain settlement: three real Base mainnet transactions (agent `fiat_pay`, browser shop checkout), each visible as `fiat | confirmed` with the settlement tx hash on the card ledger.
+- Fresh MCP client drill 6/6: status, credentials reveal, settled purchase, over-budget decline, frozen-card decline, ledger state.
+- Decline beats exercised at every layer: card budget (`over_period_limit`), frozen card, unknown card, Stripe balance pre-decline.
+
 ## [0.7.0] - 2026-06-11
 
 The MCP robustness release: remit's endpoint verified against the live protocol fingerprints of 13 real agent harnesses (Claude Code, claude.ai web, Codex, ChatGPT, OpenClaw, Hermes, Cursor, VS Code, Windsurf, Gemini CLI, Goose, opencode, Amp, Factory Droid), the gaps that sweep surfaced fixed, and the whole surface pinned by a permanent conformance suite. Shipped through the standard 3-reviewer pre-release pass (4 findings, all actioned).

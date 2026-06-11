@@ -20,6 +20,7 @@ import {
 } from "@remit/engine";
 import { createApp } from "../src/app";
 import type { AppDeps } from "../src/deps";
+import { recordFiatDecision } from "../src/stripe/decisions";
 
 const MERCHANT = "0xAc36D18d2315c8c1F6e93B9074D3C25e2DC14127";
 const user = privateKeyToAccount(generatePrivateKey());
@@ -250,6 +251,120 @@ describe("dashboard api", () => {
     expect((await fetch(`${base}/api/cards/${cardId}/unfreeze`, { method: "POST", headers: h })).status).toBe(200);
     const url = (await (await fetch(`${base}/api/cards/${cardId}/url`, { headers: h })).json()) as { card_url: string };
     expect(url.card_url).toContain("/c/");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fiat tools: registered only when a Stripe client is wired (pay cards)
+// ---------------------------------------------------------------------------
+
+describe("fiat tools", () => {
+  const FIAT_PAN = "4000000000000005"; // obviously-fake test PAN
+  const linked = new Map<string, string>(); // remit card id -> Issuing card id
+
+  const fakeStripe = {
+    authCalls: [] as Array<{ cardId: string; amountCents: number; merchantName: string }>,
+    async findCardForRemitCard(remitCardId: string) {
+      return linked.get(remitCardId) ?? null;
+    },
+    async getCardDetails(icId: string, _opts?: { reveal?: boolean }) {
+      return {
+        id: icId,
+        last4: FIAT_PAN.slice(-4),
+        exp_month: 12,
+        exp_year: 2030,
+        brand: "Visa",
+        status: "active",
+        number: FIAT_PAN,
+        cvc: "123",
+        cardholder_name: "remit agent",
+        metadata: {} as Record<string, string>,
+      };
+    },
+    async createTestAuthorization(args: { cardId: string; amountCents: number; merchantName: string }) {
+      fakeStripe.authCalls.push(args);
+      const id = `iauth_test_${fakeStripe.authCalls.length}`;
+      // the in-process webhook decides + caches synchronously inside the test
+      // authorization round-trip; simulate exactly that
+      recordFiatDecision(id, { approved: true, reason: "in_budget", cardId: args.cardId });
+      return { id, approved: true, status: "closed", amount: args.amountCents, currency: "usd" };
+    },
+    async listActiveCardIds() {
+      return [...new Set(linked.values())];
+    },
+  };
+
+  // second app instance: same store, stripe wired (the global one has none)
+  let fiatServer: ReturnType<typeof Bun.serve>;
+  let fiatBase: string;
+
+  beforeAll(() => {
+    const fiatDeps = {
+      spendMutex: new KeyedMutex(),
+      store,
+      relayer: relayer as unknown as Relayer,
+      userSigner: user,
+      adminToken: null,
+      verifyPrivyToken: null,
+      stripe: fakeStripe,
+    } as unknown as AppDeps;
+    fiatServer = Bun.serve({ port: 0, fetch: createApp(fiatDeps).fetch });
+    fiatBase = `http://localhost:${fiatServer.port}`;
+    // widen the host allowlist to this second server (REMIT_PUBLIC_MCP_BASE pins the first)
+    process.env.REMIT_ALLOWED_HOSTS = new URL(fiatBase).host;
+  });
+
+  afterAll(() => {
+    fiatServer.stop(true);
+    delete process.env.REMIT_ALLOWED_HOSTS;
+  });
+
+  test("stripe absent: pay card exposes neither fiat_pay nor card_credentials", async () => {
+    const { secret } = await issue({ pay: { lifetime: { amount: "5" } } }, "no-stripe");
+    const client = await connect(`${base}/c/${secret}/mcp`);
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names).not.toContain("fiat_pay");
+    expect(names).not.toContain("card_credentials");
+    await client.close();
+  });
+
+  test("stripe wired: both tools on a pay card; fiat_pay carries the cached decision reason; credentials reveal", async () => {
+    const { cardId, secret } = await issue({ pay: { period: { amount: "25", seconds: 604800 } } }, "fiat-card");
+    linked.set(cardId, "ic_fake_1");
+    const client = await connect(`${fiatBase}/c/${secret}/mcp`);
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names).toContain("fiat_pay");
+    expect(names).toContain("card_credentials");
+
+    const r = parse(await client.callTool({ name: "fiat_pay", arguments: { amount: "1.25", merchant: "coffee bar" } }));
+    expect(r.approved).toBe(true);
+    expect(r.reason).toBe("in_budget"); // from the decisions cache, not the generic fallback
+    expect(r.authorization_id).toBeDefined();
+    expect(r.merchant).toBe("coffee bar");
+    expect(r.note).toBeUndefined();
+    expect(r.settlement).toBeUndefined(); // no fiatSettler wired
+    const call = fakeStripe.authCalls[fakeStripe.authCalls.length - 1]!;
+    expect(call.cardId).toBe("ic_fake_1");
+    expect(call.amountCents).toBe(125);
+
+    const creds = parse(await client.callTool({ name: "card_credentials", arguments: {} }));
+    expect(creds.brand).toBe("Visa");
+    expect(creds.number).toBe(FIAT_PAN);
+    expect(creds.cvc).toBe("123");
+    expect(creds.last4).toBe("0005");
+    await client.close();
+  });
+
+  test("no linked Visa: typed no_fiat_card refusal on both tools", async () => {
+    const { secret } = await issue({ pay: { lifetime: { amount: "5" } } }, "unlinked");
+    const client = await connect(`${fiatBase}/c/${secret}/mcp`);
+    const pay = await client.callTool({ name: "fiat_pay", arguments: { amount: "1" } });
+    expect(pay.isError).toBe(true);
+    expect(parse(pay).code).toBe("no_fiat_card");
+    const creds = await client.callTool({ name: "card_credentials", arguments: {} });
+    expect(creds.isError).toBe(true);
+    expect(parse(creds).code).toBe("no_fiat_card");
+    await client.close();
   });
 });
 

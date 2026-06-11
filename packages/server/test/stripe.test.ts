@@ -4,9 +4,11 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { KeyedMutex, Store, issueRootCard, issueSubCard, freezeCard, unfreezeCard, type Relayer } from "@remit/engine";
+import type { Address } from "viem";
+import { FEE_COLLECTOR, KeyedMutex, Store, issueRootCard, issueSubCard, freezeCard, unfreezeCard, type Relayer } from "@remit/engine";
 import { createApp } from "../src/app";
 import type { AppDeps } from "../src/deps";
+import { recentFiatDecision } from "../src/stripe/decisions";
 import { verifyStripeSignature } from "../src/stripe/routes";
 
 const user = privateKeyToAccount(generatePrivateKey());
@@ -16,12 +18,13 @@ let server: ReturnType<typeof Bun.serve>;
 let base: string;
 let store: Store;
 let cardId: string;
+let deps: AppDeps;
 
 beforeAll(async () => {
   process.env.REMIT_MASTER_KEY = "f".repeat(64);
   process.env.REMIT_STRIPE_WEBHOOK_SECRET = WHSEC;
   store = new Store(":memory:");
-  const deps: AppDeps = {
+  deps = {
     spendMutex: new KeyedMutex(),
     store,
     relayer: {} as Relayer, // webhook path never touches the relayer (2s rule)
@@ -50,7 +53,7 @@ async function sign(body: string, secret = WHSEC, t = Math.floor(Date.now() / 10
   return `t=${t},v1=${[...mac].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
-function authEvent(id: string, amountCents: number, remitCardId: string | null): string {
+function authEvent(id: string, amountCents: number, remitCardId: string | null, merchant?: string): string {
   return JSON.stringify({
     type: "issuing_authorization.request",
     data: {
@@ -60,6 +63,7 @@ function authEvent(id: string, amountCents: number, remitCardId: string | null):
         currency: "usd",
         pending_request: { amount: amountCents, currency: "usd" },
         card: { id: "ic_test", metadata: remitCardId ? { remit_card_id: remitCardId } : {} },
+        ...(merchant ? { merchant_data: { name: merchant } } : {}),
       },
     },
   });
@@ -178,5 +182,103 @@ describe("sub-card ancestor enforcement (the decision walks the whole chain)", (
     expect((await post(authEvent("iauth_sib_a", 400, a.cardId))).body.approved).toBe(true);
     // $4 through B fits B's OWN cap ($4 <= $5) but the parent subtree is now $8 > $5 -> decline
     expect((await post(authEvent("iauth_sib_b", 400, b.cardId))).body.approved).toBe(false);
+  });
+});
+
+describe("fiat charges + settlement mode", () => {
+  async function freshCard(name: string, terms: Parameters<typeof issueRootCard>[1]["terms"]): Promise<string> {
+    const issued = await issueRootCard(
+      { store, userSigner: user, revocationNonceOverride: 0n },
+      { userId: "u-stripe", name, terms },
+    );
+    return issued.cardId;
+  }
+
+  test("approved charges book as kind fiat with a merchant-bearing memo", async () => {
+    const id = await freshCard("fiat-memo", { pay: { period: { amount: "10", seconds: 604800 } } });
+    const res = await post(authEvent("iauth_fiat1", 300, id, "Blue Bottle"));
+    expect(res.body.approved).toBe(true);
+    const row = store.chargeByIdempotency(id, "stripe-iauth_fiat1")!;
+    expect(row.kind).toBe("fiat");
+    expect(row.memo).toContain("visa");
+    expect(row.memo).toContain("Blue Bottle");
+    expect(row.memo).toContain("iauth_fiat1");
+    // settlement off: today's shape (booked confirmed, no chain leg)
+    expect(row.status).toBe("confirmed");
+    expect(row.to_addr).toBeNull();
+    expect(row.request_id).toBe("iauth_fiat1");
+  });
+
+  test("a merchant-whitelisted card declines every Visa charge (merchant_scoped_card)", async () => {
+    const id = await freshCard("merchant-scoped", {
+      pay: { period: { amount: "10", seconds: 604800 } },
+      merchants: ["0xAc36D18d2315c8c1F6e93B9074D3C25e2DC14127" as Address],
+    });
+    const res = await post(authEvent("iauth_ms1", 100, id));
+    expect(res.body.approved).toBe(false);
+    expect(recentFiatDecision("iauth_ms1")).toMatchObject({
+      approved: false,
+      reason: "merchant_scoped_card",
+      cardId: id,
+    });
+  });
+
+  test("settlement mode: approved row lands pending with a recipient and fires the settler", async () => {
+    const id = await freshCard("settle-card", { pay: { period: { amount: "10", seconds: 604800 } } });
+    const settles: string[] = [];
+    process.env.REMIT_FIAT_SETTLEMENT = "1";
+    delete process.env.REMIT_SETTLEMENT_ADDRESS; // recipient falls back to the fee collector
+    deps.fiatSettler = {
+      settle: async (cid) => {
+        settles.push(cid);
+      },
+      sweep: async () => ({ settled: 0, left: 0 }),
+    };
+    try {
+      const res = await post(authEvent("iauth_set1", 400, id, "Latte Larder"));
+      expect(res.body.approved).toBe(true);
+      const row = store.chargeByIdempotency(id, "stripe-iauth_set1")!;
+      expect(row.kind).toBe("fiat");
+      expect(row.status).toBe("pending");
+      expect(row.to_addr).toBe(FEE_COLLECTOR);
+      expect(row.request_id).toBeNull();
+      // the settler fires detached (never inside the 2s reply window); poll briefly
+      const t0 = Date.now();
+      while (!settles.length && Date.now() - t0 < 1000) await new Promise((r) => setTimeout(r, 10));
+      expect(settles).toEqual([row.id]);
+    } finally {
+      delete process.env.REMIT_FIAT_SETTLEMENT;
+      deps.fiatSettler = null;
+    }
+  });
+
+  test("settlement headroom: an in-budget amount inside the fee margin declines", async () => {
+    const id = await freshCard("headroom-card", { pay: { period: { amount: "5", seconds: 604800 } } });
+    // settlement-on is derived from the EXECUTOR's existence (single source of truth)
+    deps.fiatSettler = { settle: async () => {}, sweep: async () => ({ settled: 0, left: 0 }) };
+    try {
+      // $5.00 fits the cap exactly, but + the default fee headroom overflows -> decline
+      const on = await post(authEvent("iauth_hr1", 500, id));
+      expect(on.body.approved).toBe(false);
+      expect(recentFiatDecision("iauth_hr1")).toMatchObject({ approved: false, reason: "over_period_limit" });
+    } finally {
+      deps.fiatSettler = null;
+    }
+    // settlement off: no headroom, the same amount approves (the decline held no budget)
+    const off = await post(authEvent("iauth_hr2", 500, id));
+    expect(off.body.approved).toBe(true);
+  });
+
+  test("decision cache journals approve and decline reasons", async () => {
+    const id = await freshCard("journal-card", { pay: { period: { amount: "10", seconds: 604800 } } });
+    await post(authEvent("iauth_dc1", 100, id));
+    expect(recentFiatDecision("iauth_dc1")).toMatchObject({ approved: true, reason: "in_budget", cardId: id });
+    await post(authEvent("iauth_dc2", 100, "card-that-does-not-exist"));
+    expect(recentFiatDecision("iauth_dc2")).toMatchObject({
+      approved: false,
+      reason: "unknown_card",
+      cardId: "card-that-does-not-exist",
+    });
+    expect(recentFiatDecision("iauth_never_seen")).toBeNull();
   });
 });

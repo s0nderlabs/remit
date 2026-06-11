@@ -36,14 +36,15 @@ import {
 } from "@remit/engine";
 import type { AppDeps } from "../deps";
 import { spendDeps, spendKey } from "../deps";
+import { recentFiatDecision } from "../stripe/decisions";
 
-const SERVER_INFO = { name: "remit", version: "0.7.0" };
+const SERVER_INFO = { name: "remit", version: "0.8.0" };
 
 // Surfaced to clients at initialize. Claude Code's tool search (default-on since mid-2026)
 // keys discovery on this text and truncates at 2KB: keep it a compact routing guide.
 const INSTRUCTIONS = [
   "remit is the agent's spending card: a scoped, revocable spending authority granted by the card owner. The connection itself is the card; it holds no funds of its own and every action is checked against the card's terms (per-payment cap, period budget, expiry, allowlists).",
-  "Tools: `card` reports status, terms and remaining budget (check it before the first spend). `pay` sends USDC to a recipient or settles an x402 payment requirement. `paid_fetch` fetches an HTTP resource and pays its 402 challenge automatically. `execute` calls an allowlisted contract within the card's contract terms. `issue_subcard` mints a narrower child card for a sub-agent and returns its connection URL (treat it as a secret). `revoke_subcard` kills a child card and its descendants instantly.",
+  "Tools: `card` reports status, terms and remaining budget (check it before the first spend). `pay` sends USDC to a recipient or settles an x402 payment requirement. `paid_fetch` fetches an HTTP resource and pays its 402 challenge automatically. `execute` calls an allowlisted contract within the card's contract terms. `issue_subcard` mints a narrower child card for a sub-agent and returns its connection URL (treat it as a secret). `revoke_subcard` kills a child card and its descendants instantly. On fiat-linked cards, `fiat_pay` buys over Visa rails (simulated, test mode) from the same budget and `card_credentials` reveals the linked test Visa for merchant checkouts.",
   "A frozen card still answers `card` but refuses spends. Refusals name the violated term; read the message before retrying.",
 ].join("\n\n");
 
@@ -266,6 +267,101 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
               fee: atomsToUsdc(feeAtoms),
               remaining_this_period: state?.remaining_this_period ?? null,
             },
+          };
+        }),
+    );
+  }
+
+  // ---- fiat leg (pay cards with a Stripe client wired; the Visa side is SIMULATED
+  //      via test-mode Issuing, locked) ----
+  if (card.terms.pay && deps.stripe) {
+    const stripe = deps.stripe;
+
+    server.registerTool(
+      "fiat_pay",
+      {
+        title: "Pay by Visa (test mode)",
+        description:
+          "Make a Visa purchase with this card's linked virtual card (the fiat leg is SIMULATED: Stripe test-mode Issuing, no real merchant). The purchase is authorized in real time against the SAME budget as your crypto spends; declines carry a reason (over_period_limit, card_frozen, ...). When on-chain settlement is enabled, the approved charge settles as a real USDC transfer and the receipt carries the tx.",
+        inputSchema: {
+          amount: z.string().regex(/^\d+(\.\d{1,2})?$/).describe('USD amount, decimal string, e.g. "4.20"'),
+          merchant: z.string().min(1).max(80).optional().describe('merchant name on the authorization (default "remit demo merchant")'),
+        },
+        annotations: { destructiveHint: true, openWorldHint: false },
+      },
+      async (args: { amount: string; merchant?: string }) =>
+        run(async () => {
+          const ic = await stripe.findCardForRemitCard(card.id);
+          if (!ic) throw new RefusalError("no_fiat_card", "no test-mode Visa card is linked to this card");
+          const merchantName = args.merchant ?? "remit demo merchant";
+          // USD cents (schema caps at 2 decimals, so the atoms division is exact)
+          const amountCents = Number(usdcToAtoms(args.amount) / 10_000n);
+          const auth = await stripe.createTestAuthorization({ cardId: ic, amountCents, merchantName });
+          // the in-process webhook decided + cached during the authorization round-trip;
+          // null = a DIFFERENT environment sharing this Stripe account answered instead
+          const decision = recentFiatDecision(auth.id);
+
+          let settlement: { status: string; tx?: string | null } | undefined;
+          if (auth.approved && deps.fiatSettler) {
+            // the webhook inserted the charge row pending; the settlement executor
+            // drives that SAME row to confirmed (real USDC transfer, tx hash) or
+            // settlement_unconfirmed (terminal problem; the card freezes). Poll it.
+            settlement = { status: "pending" };
+            const started = Date.now();
+            const deadline = started + 25_000;
+            for (;;) {
+              const row = sd.store.chargeByIdempotency(card.id, `stripe-${auth.id}`);
+              if (row && (row.status === "confirmed" || row.status === "settlement_unconfirmed")) {
+                settlement = { status: row.status, tx: row.tx_hash };
+                break;
+              }
+              // decided by another environment sharing this stripe account: no local
+              // row will ever appear, so stop waiting after a grace beat
+              if (!row && !decision && Date.now() - started > 3_000) break;
+              if (Date.now() >= deadline) break;
+              await new Promise((r) => setTimeout(r, 1_000));
+            }
+          }
+
+          const state = cardState(sd.store, card.id, now());
+          return {
+            approved: auth.approved,
+            reason: decision?.reason ?? auth.decline_reason ?? (auth.approved ? "in_budget" : "declined_upstream"),
+            amount: args.amount,
+            merchant: merchantName,
+            authorization_id: auth.id,
+            remaining_this_period: state?.remaining_this_period ?? null,
+            ...(settlement ? { settlement } : {}),
+            ...(decision
+              ? {}
+              : { note: "decision detail unavailable: the authorization was answered by a different environment sharing this stripe account" }),
+          };
+        }),
+    );
+
+    server.registerTool(
+      "card_credentials",
+      {
+        title: "Card credentials (test Visa)",
+        description:
+          "Reveal the linked test-mode virtual Visa credentials (number, expiry, cvc) so you can check out at a merchant yourself. Treat them as secrets. Every charge made with them still authorizes in real time against this card's budget.",
+        inputSchema: {},
+        annotations: { readOnlyHint: true, openWorldHint: false },
+      },
+      async () =>
+        run(async () => {
+          const ic = await stripe.findCardForRemitCard(card.id);
+          if (!ic) throw new RefusalError("no_fiat_card", "no test-mode Visa card is linked to this card");
+          const det = await stripe.getCardDetails(ic, { reveal: true });
+          return {
+            brand: det.brand,
+            number: det.number,
+            exp_month: det.exp_month,
+            exp_year: det.exp_year,
+            cvc: det.cvc,
+            cardholder_name: det.cardholder_name,
+            last4: det.last4,
+            note: "stripe test-mode card: works only against this stripe account's test environment",
           };
         }),
     );

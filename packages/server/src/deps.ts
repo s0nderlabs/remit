@@ -3,9 +3,12 @@
 // tests build their own AppDeps with fakes.
 
 import { privateKeyToAccount } from "viem/accounts";
+import { isAddress } from "viem";
 import type { Hex } from "viem";
 import { KeyedMutex, Relayer, Store, type DelegationSigner, type FinalizeOpsDeps, type SpendDeps } from "@remit/engine";
 import { makePrivyVerifier, type PrivyVerifier } from "./api/privy";
+import { makeStripeClient, type StripeClient } from "./stripe/client";
+import { makeFiatSettler, type FiatSettler } from "./stripe/settlement";
 import { veniceChat, type ChatFn } from "./venice/client";
 
 export type AppDeps = {
@@ -26,6 +29,10 @@ export type AppDeps = {
   veniceChat?: ChatFn | null;
   /** Basescan API key for verified-contract labels in compiled drafts (optional) */
   basescanKey?: string | null;
+  /** Stripe Issuing REST client (test-mode-only); null = fiat trigger/credential tools disabled */
+  stripe?: StripeClient | null;
+  /** drives approved fiat charge rows through spend(); null = settlement mode off */
+  fiatSettler?: FiatSettler | null;
 };
 
 /** Numeric env with a default that survives the empty string. `Number(x ?? d)` is a trap:
@@ -44,7 +51,7 @@ export function realDeps(): AppDeps {
   const relayer = new Relayer();
   const pk = process.env.REMIT_DEV_USER_PK as Hex | undefined;
   const privyAppId = process.env.REMIT_PRIVY_APP_ID;
-  return {
+  const deps: AppDeps = {
     store,
     relayer,
     userSigner: pk ? privateKeyToAccount(pk) : null,
@@ -53,7 +60,20 @@ export function realDeps(): AppDeps {
     spendMutex: new KeyedMutex(),
     veniceChat: process.env.VENICE_API_KEY ? veniceChat() : null,
     basescanKey: process.env.BASESCAN_API_KEY ?? null,
+    stripe: makeStripeClient(),
   };
+  // the settler closes over the full deps object (store + mutex + spend seams).
+  // A malformed settlement address would book every approved charge against a
+  // recipient the relayer can never pay (parking rows + freezing cards), so a bad
+  // value disables on-chain settlement LOUDLY and the lane falls back to ledger-only.
+  const settleAddr = process.env.REMIT_SETTLEMENT_ADDRESS;
+  let settlementOk = process.env.REMIT_FIAT_SETTLEMENT === "1";
+  if (settlementOk && settleAddr && !isAddress(settleAddr)) {
+    console.error("[deps] REMIT_SETTLEMENT_ADDRESS is not a valid address; on-chain settlement DISABLED (fiat lane falls back to ledger-only)");
+    settlementOk = false;
+  }
+  deps.fiatSettler = settlementOk ? makeFiatSettler(deps) : null;
+  return deps;
 }
 
 /** The card-tree key a spend serializes on: the root ancestor (whole subtree shares budget). */

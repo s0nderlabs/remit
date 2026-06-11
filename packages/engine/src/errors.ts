@@ -21,6 +21,7 @@ export const REFUSAL_CODES = [
   "token_not_allowed",
   "per_trade_exceeded",
   "price_exceeds_max",
+  "no_fiat_card",
   "invalid_terms",
 ] as const;
 

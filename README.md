@@ -44,6 +44,8 @@ MCP tools, served over Streamable HTTP. The exact set a card exposes matches its
 | `card` | Live state: remaining budget, terms, expiry, recent charges, sub-cards |
 | `pay` | Send USDC on Base within the card's limits; blocks until confirmed on-chain |
 | `paid_fetch` | Fetch a URL; on HTTP 402 (x402), pay automatically and return the content |
+| `fiat_pay` | Buy over Visa rails (simulated: Stripe test-mode Issuing) against the same budget; with settlement on, the receipt carries the on-chain tx |
+| `card_credentials` | Reveal the linked test-mode virtual Visa (number/expiry/cvc) so the agent can check out at a merchant |
 | `execute` | Run scoped contract calls (e.g. approve + swap, stake, mint) atomically in one redemption; only on cards with contract scope |
 | `issue_subcard` | Mint a tighter child card for a sub-agent; pay caps and contract scope must both nest inside the parent's |
 | `revoke_subcard` | Instantly kill a sub-card (and its descendants) |
@@ -169,6 +171,9 @@ bun run typecheck        # per-package tsc
 | `REMIT_SELLER_PAYTO` | no | payout address for the built-in demo seller |
 | `REMIT_PAID_FETCH_ALLOW_LOCAL` | no | allow `paid_fetch` to hit local/private hosts (dev only) |
 | `REMIT_STRIPE_WEBHOOK_SECRET` | no | Stripe real-time auth webhook signing secret (test mode); unset = the fiat leg answers 503 (disabled) |
+| `STRIPE_SECRET_KEY` | no | Stripe TEST-mode secret key (`sk_test_`/`rk_test_` only; anything else is refused); enables `fiat_pay`, `card_credentials`, and the demo shop |
+| `REMIT_FIAT_SETTLEMENT` | no | `1` = approved Visa charges settle on-chain as real delegated USDC transfers (see `REMIT_SETTLEMENT_ADDRESS`, `REMIT_FIAT_FEE_HEADROOM`, `REMIT_FIAT_SETTLE_INTERVAL_MS`) |
+| `REMIT_SETTLEMENT_ADDRESS` | settlement | recipient of the fiat settlement transfers (validated at boot; default = the fee collector) |
 | `VENICE_API_KEY` | no | enables `POST /cards/compile` (plain-language card drafting); unset = the compile endpoint refuses (disabled) |
 | `VENICE_MODEL` | with key | Venice model id for the NL compiler; pin it (the fallback default is unvalidated) |
 | `REMIT_DASHBOARD_BASE` | OAuth lane | dashboard origin that hosts the OAuth consent (card-picker) page (default `http://localhost:4071`) |
@@ -193,7 +198,7 @@ The dashboard carries **no shared secret**: every API call sends the signed-in u
 - **Limits enforced twice**: server-side at call time (typed refusals) and on-chain by caveat enforcers at redemption.
 - **Revocation layers**: freeze (server, reversible) -> revoke (card + subtree, permanent) -> nuke (on-chain nonce bump, kills every delegation ever issued by the wallet). All three are user-operable from the dashboard; on-chain revoke and nuke are signed by the user's own embedded wallet in the browser (an admin leaf delegation) and ride the relayer gaslessly.
 - **MCP surface hardening**: Host allowlist (DNS-rebinding guard), per-card and bad-secret rate limits, 1 MiB body cap, secrets never echoed in errors or logs.
-- **Stripe leg**: test mode only, by design; the real-time auth webhook answers from cached delegation state within Stripe's 2s window.
+- **Stripe leg**: test mode only, by design; the real-time auth webhook answers from cached delegation state within Stripe's 2s window. With settlement enabled, an approved charge settles as a real delegated USDC transfer afterwards (the same enforcers count both rails), and a charge whose settlement cannot land parks `settlement_unconfirmed` and freezes the card rather than ever releasing its budget.
 
 ## Built for the MetaMask Smart Accounts x 1Shot API x Venice AI Dev Cook Off (2026)
 

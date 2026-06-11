@@ -5,7 +5,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { Address } from "viem";
-import { Store } from "../src/store";
+import { Store, type ChargeRow } from "../src/store";
 import { issueRootCard, issueSubCard, rotateCardSecret } from "../src/issuance";
 import { spend, cardState, reconcilePending, type SpendDeps } from "../src/spend";
 import { KeyedMutex } from "../src/mutex";
@@ -700,5 +700,148 @@ describe("execute: allowance pins + policy gates", () => {
       }),
     ).rejects.toMatchObject({ code: "invalid_terms" });
     expect(relayer.calls.estimates.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fiat settlement mode: the webhook books the row (pending, never broadcast);
+// spend(settleChargeId) drives that SAME row through the pipeline. An approved
+// fiat charge never releases its budget: terminal trouble flags it for ops
+// (settlement_unconfirmed) instead of failing it.
+// ---------------------------------------------------------------------------
+
+describe("fiat settlement mode", () => {
+  const SETTLE = "0x4444444444444444444444444444444444444444" as Address;
+
+  const insertFiat = (store: Store, cardId: string, over: Partial<ChargeRow> = {}) => {
+    const row: ChargeRow = {
+      id: "f1", card_id: cardId, idempotency_key: null, kind: "fiat", to_addr: SETTLE,
+      amount_atoms: 5_000_000n, fee_atoms: 0n, request_id: null, tx_hash: null,
+      status: "pending", memo: "card auth", created_at: NOW, ...over,
+    };
+    store.insertCharge(row);
+    return row;
+  };
+
+  test("happy path: the booked row itself is driven to confirmed (no second row)", async () => {
+    const { store, relayer, deps } = mkWorld();
+    const issued = await mkCard(store);
+    insertFiat(store, issued.cardId);
+    const receipt = await spend(deps, issued.cardId, { kind: "fiat", mode: "pay", settleChargeId: "f1" });
+    expect(receipt.status).toBe("confirmed");
+    expect(receipt.amount).toBe("5");
+    const row = store.getCharge("f1")!;
+    expect(row.status).toBe("confirmed");
+    expect(row.tx_hash).toBe("0xabc1");
+    expect(row.fee_atoms).toBe(10_000n); // the fee joins the row's budget debit
+    expect(relayer.calls.sends.length).toBe(1);
+    expect(store.listCharges(issued.cardId).length).toBe(1); // reused, never duplicated
+    expect(store.subtreeSpentSince(issued.cardId, 0)).toBe(5_010_000n); // amount + fee held
+  });
+
+  test("settle skips validation: a row consuming the whole budget still settles", async () => {
+    const { store, deps } = mkWorld(); // 25 USDC period cap
+    const issued = await mkCard(store);
+    // a normal spend of the same size refuses (amount + fee over the cap)
+    await expect(
+      spend(deps, issued.cardId, { kind: "pay", mode: "pay", to: SETTLE, amountAtoms: 25_000_000n }),
+    ).rejects.toMatchObject({ code: "over_period_limit" });
+    // the booked fiat row settles anyway: the webhook already decided it against the books
+    insertFiat(store, issued.cardId, { amount_atoms: 25_000_000n });
+    const receipt = await spend(deps, issued.cardId, { kind: "fiat", mode: "pay", settleChargeId: "f1" });
+    expect(receipt.status).toBe("confirmed");
+    expect(store.getCharge("f1")!.status).toBe("confirmed");
+  });
+
+  test("replay: terminal row returns its receipt; broadcast row is never re-sent", async () => {
+    const { store, relayer, deps } = mkWorld();
+    const issued = await mkCard(store);
+    insertFiat(store, issued.cardId, { id: "fc", status: "confirmed", tx_hash: "0xdone", fee_atoms: 123n });
+    const replay = await spend(deps, issued.cardId, { kind: "fiat", mode: "pay", settleChargeId: "fc" });
+    expect(replay.status).toBe("confirmed");
+    expect(replay.tx).toBe("0xdone");
+    expect(relayer.calls.sends.length).toBe(0);
+    // pending WITH request_id: a prior attempt already broadcast; the reconcile sweep
+    // owns the row, re-sending would risk a double-spend
+    insertFiat(store, issued.cardId, { id: "fp", request_id: "req-prior" });
+    const pending = await spend(deps, issued.cardId, { kind: "fiat", mode: "pay", settleChargeId: "fp" });
+    expect(pending.status).toBe("pending");
+    expect(relayer.calls.sends.length).toBe(0);
+    expect(store.getCharge("fp")!.status).toBe("pending");
+  });
+
+  test("missing row / missing recipient -> EngineError before any relayer traffic", async () => {
+    const { store, relayer, deps } = mkWorld();
+    const issued = await mkCard(store);
+    await expect(
+      spend(deps, issued.cardId, { kind: "fiat", mode: "pay", settleChargeId: "ghost" }),
+    ).rejects.toThrow("no such settlement charge");
+    insertFiat(store, issued.cardId, { id: "norecip", to_addr: null });
+    await expect(
+      spend(deps, issued.cardId, { kind: "fiat", mode: "pay", settleChargeId: "norecip" }),
+    ).rejects.toThrow("no recipient");
+    expect(relayer.calls.estimates.length).toBe(0);
+  });
+
+  test("freeze landing mid-settle leaves the row pending (retryable), never failed", async () => {
+    const { store, relayer, deps } = mkWorld();
+    const issued = await mkCard(store);
+    insertFiat(store, issued.cardId);
+    relayer.onEstimate = () => freezeCard(store, issued.cardId); // freeze lands mid-pipeline
+    await expect(
+      spend(deps, issued.cardId, { kind: "fiat", mode: "pay", settleChargeId: "f1" }),
+    ).rejects.toMatchObject({ code: "card_frozen" });
+    expect(relayer.calls.sends.length).toBe(0);
+    expect(store.getCharge("f1")!.status).toBe("pending"); // budget stays held
+  });
+
+  test("on-chain revert -> settlement_unconfirmed, budget stays held", async () => {
+    const { store, relayer, deps } = mkWorld();
+    const issued = await mkCard(store);
+    insertFiat(store, issued.cardId);
+    relayer.statusResult = { status: 500, txHash: "0xdead" as never };
+    await expect(
+      spend(deps, issued.cardId, { kind: "fiat", mode: "pay", settleChargeId: "f1" }),
+    ).rejects.toThrow("settlement transaction reverted");
+    const row = store.getCharge("f1")!;
+    expect(row.status).toBe("settlement_unconfirmed"); // NOT failed
+    expect(row.tx_hash).toBe("0xdead");
+    // settlement_unconfirmed counts against budget (only 'failed' is excluded)
+    expect(store.subtreeSpentSince(issued.cardId, 0)).toBe(5_010_000n);
+  });
+
+  test("reconcile: a stale broadcast fiat row flags instead of failing; pay still fails", async () => {
+    const { store, deps } = mkWorld();
+    const issued = await mkCard(store);
+    insertFiat(store, issued.cardId, { id: "rf", request_id: "req-rf", fee_atoms: 111n, created_at: NOW - 600 });
+    store.insertCharge({
+      id: "rp", card_id: issued.cardId, idempotency_key: null, kind: "pay", to_addr: MERCHANT,
+      amount_atoms: 10_000n, fee_atoms: 222n, request_id: "req-rp", tx_hash: null,
+      status: "pending", memo: null, created_at: NOW - 600,
+    });
+    const result = await reconcilePending(deps, {
+      olderThanSeconds: 120,
+      blockNumber: async () => 10_000n,
+      scanFeeLogs: async () => [], // neither fee leg landed
+    });
+    expect(result.reconciled).toBe(2);
+    expect(store.getCharge("rf")!.status).toBe("settlement_unconfirmed"); // budget held, ops flag
+    expect(store.getCharge("rp")!.status).toBe("failed"); // budget freed
+  });
+
+  test("unsettledFiatCharges: pending + fiat + never-broadcast + older-than only", async () => {
+    const { store } = mkWorld();
+    const issued = await mkCard(store);
+    insertFiat(store, issued.cardId, { id: "q1", created_at: NOW - 100 }); // the sweep target
+    insertFiat(store, issued.cardId, { id: "q2", created_at: NOW + 100 }); // too fresh
+    insertFiat(store, issued.cardId, { id: "q3", request_id: "req-q3", created_at: NOW - 100 }); // broadcast: reconcile owns it
+    insertFiat(store, issued.cardId, { id: "q4", status: "confirmed", created_at: NOW - 100 }); // settled
+    insertFiat(store, issued.cardId, { id: "q5", status: "settlement_unconfirmed", created_at: NOW - 100 }); // ops-flagged
+    store.insertCharge({
+      id: "q6", card_id: issued.cardId, idempotency_key: null, kind: "pay", to_addr: MERCHANT,
+      amount_atoms: 1n, fee_atoms: 0n, request_id: null, tx_hash: null,
+      status: "pending", memo: null, created_at: NOW - 100,
+    });
+    expect(store.unsettledFiatCharges(NOW).map((r) => r.id)).toEqual(["q1"]);
   });
 });

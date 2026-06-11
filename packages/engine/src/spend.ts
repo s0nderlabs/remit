@@ -29,7 +29,7 @@ import {
 import { EngineError, RefusalError } from "./errors";
 import { atomsToUsdc, parseAtoms, usdcToAtoms } from "./money";
 import { Relayer } from "./relayer";
-import { periodWindow, type CardRow, type ChargeKind, type Store } from "./store";
+import { periodWindow, type CardRow, type ChargeKind, type ChargeRow, type Store } from "./store";
 import type { CardState, Receipt, Wire7702Auth, WireDelegation, WireExecution } from "./types";
 
 export type SpendMode = "pay" | "contract";
@@ -44,6 +44,10 @@ export type SpendRequest = {
   workExecutions?: WireExecution[];
   memo?: string;
   idempotencyKey?: string;
+  /** INTERNAL (fiat settlement): drive an EXISTING charge row through the pipeline
+   * instead of inserting a new one. Skips budget validation (the row already holds
+   * the budget in the books) and never marks the row failed. */
+  settleChargeId?: string;
 };
 
 export type SpendDeps = {
@@ -365,8 +369,32 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
   const now = deps.now ? deps.now() : Math.floor(Date.now() / 1000);
   const store = deps.store;
 
-  // idempotency replay
-  if (req.idempotencyKey) {
+  // settlement mode: re-drive an EXISTING charge row (the fiat leg). The webhook's
+  // atomic decide+insert already booked the row against the budget; this pass only
+  // executes the on-chain transfer for it.
+  let settleRow: ChargeRow | null = null;
+  if (req.settleChargeId) {
+    const row = store.getCharge(req.settleChargeId);
+    if (!row || row.card_id !== cardId) {
+      throw new EngineError("settle", "no such settlement charge for this card");
+    }
+    if (row.status === "confirmed" || row.status === "failed" || row.status === "settlement_unconfirmed") {
+      // terminal: replay the row as a receipt, no new attempt
+      return receiptFromCharge(deps, cardId, row.status, row.tx_hash, row.to_addr ?? FEE_COLLECTOR, row.amount_atoms, row.fee_atoms, now, row.memo ?? undefined);
+    }
+    if (row.request_id !== null) {
+      // a previous attempt already broadcast: re-sending risks a double-spend.
+      // The reconcile sweep owns the row from here.
+      return receiptFromCharge(deps, cardId, "pending", row.tx_hash, row.to_addr ?? FEE_COLLECTOR, row.amount_atoms, row.fee_atoms, now, row.memo ?? undefined);
+    }
+    if (!row.to_addr) throw new EngineError("settle", "settlement charge has no recipient");
+    // pending, never broadcast: adopt the row's terms and run the normal pipeline
+    settleRow = row;
+    req = { ...req, to: row.to_addr, amountAtoms: row.amount_atoms, kind: row.kind, mode: "pay", memo: row.memo ?? undefined };
+  }
+
+  // idempotency replay (settle mode replays against the row above)
+  if (req.idempotencyKey && !settleRow) {
     const existing = store.chargeByIdempotency(cardId, req.idempotencyKey);
     if (existing) {
       // A charge that FAILED before it was ever broadcast (request_id null) was never
@@ -401,7 +429,10 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
 
   // contract-mode work execution VALUE total counts nothing in USDC terms; the on-chain
   // budget for contract cards is the scope itself. Pay caps still count amount+fee.
-  validateSpend(deps, chain, req, amountAtoms + feeAtoms, now);
+  // Settle mode skips validation: the webhook already decided this charge against the
+  // books and the row itself holds the budget; re-validating would double-count it.
+  // The chain remains the backstop.
+  if (!settleRow) validateSpend(deps, chain, req, amountAtoms + feeAtoms, now);
 
   // authorizationList: only until A_user's 7702 code lands (stale-nonce-guarded)
   const codeCheck = deps.codeCheck ?? has7702Code;
@@ -483,8 +514,8 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
     const required = est.requiredPaymentAmount ? parseAtoms(est.requiredPaymentAmount) : feeAtoms;
     if (required > feeAtoms) {
       feeAtoms = jitter(required);
-      // re-check budgets with the real fee before retrying
-      validateSpend(deps, chain, req, amountAtoms + feeAtoms, now);
+      // re-check budgets with the real fee before retrying (skip in settle mode)
+      if (!settleRow) validateSpend(deps, chain, req, amountAtoms + feeAtoms, now);
       continue;
     }
 
@@ -495,24 +526,30 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
     // atomic-sync decide+insert and CANNOT take the spend mutex (its 2s reply window
     // can't queue behind a 90s crypto confirmation). A fiat charge that landed during
     // the estimate await gap is therefore always visible here, before we reserve+send.
-    validateSpend(deps, chain, req, amountAtoms + feeAtoms, now);
+    if (!settleRow) validateSpend(deps, chain, req, amountAtoms + feeAtoms, now);
 
-    // record BEFORE send so a crash can't double-spend on retry
-    const chargeId = crypto.randomUUID();
-    store.insertCharge({
-      id: chargeId,
-      card_id: cardId,
-      idempotency_key: req.idempotencyKey ?? null,
-      kind: req.kind,
-      to_addr: req.to ?? null,
-      amount_atoms: amountAtoms,
-      fee_atoms: feeAtoms,
-      request_id: null,
-      tx_hash: null,
-      status: "pending",
-      memo: req.memo ?? null,
-      created_at: now,
-    });
+    // record BEFORE send so a crash can't double-spend on retry. Settle mode reuses
+    // the existing row: only the fee joins the row's budget debit (mirroring what the
+    // on-chain enforcers will count).
+    const chargeId = settleRow ? settleRow.id : crypto.randomUUID();
+    if (settleRow) {
+      store.updateCharge(settleRow.id, { fee_atoms: feeAtoms });
+    } else {
+      store.insertCharge({
+        id: chargeId,
+        card_id: cardId,
+        idempotency_key: req.idempotencyKey ?? null,
+        kind: req.kind,
+        to_addr: req.to ?? null,
+        amount_atoms: amountAtoms,
+        fee_atoms: feeAtoms,
+        request_id: null,
+        tx_hash: null,
+        status: "pending",
+        memo: req.memo ?? null,
+        created_at: now,
+      });
+    }
 
     const viaChain = deps.confirmViaChain ?? true;
     // block height BEFORE send: the log-scan window for chain-side confirmation
@@ -525,15 +562,28 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
     try {
       assertChainSpendable(store.ancestorChain(cardId), now);
     } catch (e) {
-      store.updateCharge(chargeId, { status: "failed" });
+      // settle mode: the authorization was already approved, so the row keeps holding
+      // its budget; leave it 'pending' (retryable) instead of releasing it as failed
+      if (!settleRow) store.updateCharge(chargeId, { status: "failed" });
       throw e;
+    }
+
+    if (settleRow) {
+      // claim BEFORE broadcast: if the process dies mid-send (or send errors
+      // ambiguously: a timeout may still have queued the tx), the row keeps a
+      // non-null request_id, so the fiat sweep can never re-drive and
+      // double-broadcast it. The reconcile sweep resolves it from chain truth
+      // via the fee-leg log (fee fingerprint + the since_block recorded here).
+      store.updateCharge(chargeId, { request_id: `claim-${chargeId}`, since_block: sinceBlock });
     }
 
     let requestId: string;
     try {
       requestId = await deps.relayer.send(transactions, est.context, authorizationList);
     } catch (e) {
-      store.updateCharge(chargeId, { status: "failed" });
+      // pre-broadcast failure: settle rows stay 'pending' (the claim above parks
+      // them with reconcile rather than re-driving an ambiguous send)
+      if (!settleRow) store.updateCharge(chargeId, { status: "failed" });
       throw e;
     }
     // record request_id + the broadcast block: reconcile scans the fee-leg log from
@@ -556,6 +606,11 @@ export async function spend(deps: SpendDeps, cardId: string, req: SpendRequest):
       return receiptFromCharge(deps, cardId, "confirmed", confirmation.txHash, req.to ?? FEE_COLLECTOR, amountAtoms, feeAtoms, now, req.memo);
     }
     if (confirmation.status === "failed") {
+      if (settleRow) {
+        // an approved fiat charge never releases its budget: flag for ops instead
+        store.updateCharge(chargeId, { status: "settlement_unconfirmed", tx_hash: confirmation.txHash ?? undefined });
+        throw new EngineError("send", "settlement transaction reverted on-chain");
+      }
       store.updateCharge(chargeId, { status: "failed", tx_hash: confirmation.txHash ?? undefined });
       throw new EngineError("send", "transaction reverted on-chain");
     }
@@ -700,6 +755,10 @@ export async function reconcilePending(
       if (hit) {
         consumed.add(hit.txHash);
         deps.store.updateCharge(charge.id, { status: "confirmed", tx_hash: hit.txHash });
+      } else if (charge.kind === "fiat") {
+        // no fee-leg log, but a fiat charge was already approved to the card network:
+        // budget stays held and the row is flagged for ops instead of released.
+        deps.store.updateCharge(charge.id, { status: "settlement_unconfirmed" });
       } else {
         // no unclaimed fee-leg log since the broadcast block: the redemption never landed.
         deps.store.updateCharge(charge.id, { status: "failed" });

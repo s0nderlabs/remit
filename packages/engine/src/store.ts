@@ -65,7 +65,7 @@ export type CardStatus = "active" | "frozen" | "revoked" | "nuked";
 // Counts against budget (reservation held) but is NOT a proven on-chain settlement; kept
 // distinct from "confirmed" so the ledger never claims a confirmation the receipt disclaims.
 export type ChargeStatus = "pending" | "confirmed" | "failed" | "settlement_unconfirmed";
-export type ChargeKind = "pay" | "x402" | "execute" | "admin";
+export type ChargeKind = "pay" | "x402" | "execute" | "admin" | "fiat";
 
 export type UserRow = {
   id: string;
@@ -433,6 +433,19 @@ export class Store {
     const rows = this.db
       .query(
         `SELECT * FROM charges WHERE status = 'pending' AND kind = 'x402' AND request_id IS NULL AND created_at < $t`,
+      )
+      .all({ $t: before }) as never[];
+    return rows.map((r) => this.rowToCharge(r)!);
+  }
+
+  /** Fiat authorizations awaiting settlement: 'pending' fiat rows that never reached a
+   * relayer broadcast (request_id IS NULL), older than `before`. The settlement
+   * executor's sweep re-drives these through spend(); they are intentionally invisible
+   * to reconcilePending (which requires request_id NOT NULL). */
+  unsettledFiatCharges(before: number): ChargeRow[] {
+    const rows = this.db
+      .query(
+        `SELECT * FROM charges WHERE status = 'pending' AND kind = 'fiat' AND request_id IS NULL AND created_at < $t`,
       )
       .all({ $t: before }) as never[];
     return rows.map((r) => this.rowToCharge(r)!);
