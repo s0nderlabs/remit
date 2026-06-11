@@ -1,16 +1,14 @@
 "use client";
 
-// Authority controls. StageAuthority = the block beside the card, read top to
-// bottom like a statement: label + status, the money figure, the fact line,
-// the fuel-gauge bar (REMAINING allowance — it drains as the agent spends),
-// the countdown at the bar's end, verbs last. TermsGrid = the delegation term
-// sheet in the Overview view, truthful to BOTH lanes (pay and execute). All
-// control logic is the proven v1 state machines, re-skinned.
+// Authority helpers + controls. allowance() reads the live budget, TermsGrid =
+// the delegation term sheet (now living inside the foot accordion's sheet),
+// RevokeButton = the proven v1 revoke state machine wearing the vpill skin,
+// ConnectChips = the per-harness install affordances.
 
 import { useState } from "react";
 import { api, type CardState } from "@/lib/api";
 import type { useRemit } from "../useRemit";
-import { IconRevoke, IconSnowflake, StatusPill, fmtCountdown, isDead, periodLabel, shortHex, splitAmount, useCountUp } from "./ui";
+import { IconRevoke, isDead, shortHex } from "./ui";
 
 type Remit = ReturnType<typeof useRemit>;
 
@@ -53,217 +51,11 @@ export function allowance(card: CardState) {
   return { cap, remaining, spent, spentPct };
 }
 
-export function StageAuthority({
-  card,
-  remit,
-  refresh,
-  subcardCount = 0,
-  onConnect,
-}: {
-  card: CardState;
-  remit: Remit;
-  refresh: () => void | Promise<void>;
-  subcardCount?: number;
-  onConnect?: () => Promise<void>; // opens the credential overlay
-}) {
-  const dead = isDead(card.status);
-  const frozen = card.status === "frozen";
-  const { cap, remaining, spentPct } = allowance(card);
-  const ct = card.terms.contract;
-  const metered = cap !== null; // a pay budget governs this card
-
-  const animated = useCountUp(dead ? 0 : (remaining ?? 0));
-  const [whole, cents] = splitAmount(animated);
-  const [ptWhole, ptCents] = splitAmount(ct?.perTradeMax ?? 0);
-  const ptLive = ct ? perTradeEnforces(ct) : false;
-
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  const act = (fn: () => Promise<unknown>, label: string) => async () => {
-    setBusy(true);
-    setMsg(null);
-    try {
-      await fn();
-      await refresh();
-    } catch (e) {
-      setMsg(`${label} failed: ${e instanceof Error ? e.message : e}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // label above the figure: what IS this number
-  const plabel = card.terms.pay?.period ? periodLabel(card.terms.pay.period.seconds) : null;
-  const label = metered
-    ? plabel === "day"
-      ? "Remaining today"
-      : plabel === "wk"
-        ? "Remaining this week"
-        : plabel === "mo"
-          ? "Remaining this month"
-          : "Remaining · lifetime"
-    : ct
-      ? ptLive
-        ? "Per-trade ceiling"
-        : "Execute scope"
-      : "Remaining";
-
-  // one fact rides the sub-line; an active card with no sub-cards needs none —
-  // the Connect agent button below IS the affordance
-  const fact = dead
-    ? "authority gone on-chain · this card can never spend again"
-    : frozen
-      ? "spends refuse while frozen · sub-cards inherit the freeze"
-      : subcardCount > 0
-        ? `${subcardCount} sub-card${subcardCount === 1 ? "" : "s"} drawing from this scope`
-        : null;
-
-  const countdown = card.period_resets_at
-    ? { label: "resets in", at: card.period_resets_at }
-    : card.expires_at
-      ? { label: "expires in", at: card.expires_at }
-      : null;
-
-  // the bar is a fuel gauge: full when untouched, draining toward empty
-  const leftPct = Math.max(0, 100 - spentPct);
-
-  return (
-    <div className={`stageauth panel${dead ? " dead-page" : ""}`}>
-      <div className="authhead">
-        <span className="authlabel">{label}</span>
-        <span className="authstate">
-          <StatusPill status={card.status} />
-          {!metered && countdown && (
-            <span className="cdown">
-              {countdown.label} <span className="data">{fmtCountdown(countdown.at)}</span>
-            </span>
-          )}
-        </span>
-      </div>
-
-      <div className="bigfig">
-        {metered ? (
-          <span className="amt" data-testid="remaining">
-            <em>$</em>
-            {whole}
-            <i>.{cents}</i>
-          </span>
-        ) : ptLive ? (
-          <span className="amt">
-            <em>$</em>
-            {ptWhole}
-            <i>.{ptCents}</i>
-          </span>
-        ) : ct ? (
-          <span className="amt">{ct.targets.length}</span>
-        ) : (
-          <span className="amt" data-testid="remaining">
-            <em>$</em>
-            {whole}
-            <i>.{cents}</i>
-          </span>
-        )}
-      </div>
-
-      <div className="of">
-        {metered ? (
-          <>
-            of <span className="data">${cap.toLocaleString("en-US", { minimumFractionDigits: 2 })}</span>
-            {card.terms.pay?.period ? ` / ${periodLabel(card.terms.pay.period.seconds)}` : " lifetime"}
-          </>
-        ) : ct && ptLive ? (
-          <>
-            per trade · <span className="data">{ct.targets.length}</span> contract{ct.targets.length === 1 ? "" : "s"} /{" "}
-            <span className="data">{ct.selectors.length}</span> method{ct.selectors.length === 1 ? "" : "s"}
-          </>
-        ) : ct ? (
-          <>
-            contract{ct.targets.length === 1 ? "" : "s"} in scope · <span className="data">{ct.selectors.length}</span>{" "}
-            method{ct.selectors.length === 1 ? "" : "s"}
-          </>
-        ) : (
-          <>unmetered</>
-        )}
-        {fact && <span className="fact"> · {fact}</span>}
-      </div>
-
-      {metered && ct && (
-        <div className="lane2">
-          + execute · <span className="data">{ct.targets.length}</span> contract{ct.targets.length === 1 ? "" : "s"} /{" "}
-          <span className="data">{ct.selectors.length}</span> method{ct.selectors.length === 1 ? "" : "s"}
-        </div>
-      )}
-
-      {metered && (
-        <>
-          <div className="bar">
-            <i style={{ width: dead ? "0%" : leftPct > 0 ? `max(${leftPct}%, 4px)` : "0%" }} />
-          </div>
-          {countdown && (
-            <div className="barmeta">
-              <span>
-                {countdown.label} <span className="data">{fmtCountdown(countdown.at)}</span>
-              </span>
-            </div>
-          )}
-        </>
-      )}
-
-      <div className="actions">
-        {!dead && onConnect && (
-          <button className="primary" disabled={busy} onClick={act(onConnect, "reveal url")} data-testid="reveal-url">
-            Connect agent
-          </button>
-        )}
-        {card.status === "active" && (
-          <button
-            className="iconbtn"
-            disabled={busy}
-            onClick={act(() => api.freeze(card.card_id), "freeze")}
-            data-testid="freeze"
-            title="freeze card"
-            aria-label="freeze card"
-          >
-            <IconSnowflake />
-          </button>
-        )}
-        {card.status === "frozen" && (
-          <button
-            className="iconbtn on"
-            disabled={busy}
-            onClick={act(() => api.unfreeze(card.card_id), "unfreeze")}
-            data-testid="unfreeze"
-            title="unfreeze card"
-            aria-label="unfreeze card"
-          >
-            <IconSnowflake />
-          </button>
-        )}
-        <RevokeButton
-          cardId={card.card_id}
-          isSub={!!card.parent_card_id}
-          revocable={!dead}
-          signDelegation={remit.signDelegation}
-          embeddedReady={remit.embeddedReady}
-          onDone={refresh}
-        />
-      </div>
-
-      {msg && (
-        <p className="err" style={{ marginTop: 10 }}>
-          {msg}
-        </p>
-      )}
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
-// TermsGrid: the delegation term sheet (Overview panel). Two grouped stacks of
-// quiet rows — what the card can do (scope) left, how long it lives and who
-// holds it (lifecycle + enforcement) right. Values humanized: "uncapped",
-// "any merchant", "unlimited", real dates. Mono is reserved for hex.
+// TermsGrid: the delegation term sheet (inside the foot accordion's sheet).
+// Two grouped stacks of quiet rows — what the card can do (scope) left, how
+// long it lives and who holds it (lifecycle + enforcement) right. Values
+// humanized: "uncapped", "any merchant", "unlimited", real dates.
 // ---------------------------------------------------------------------------
 
 /** "approve(address,uint256)" -> "approve()"; raw 0x selectors stay short hex */
@@ -295,16 +87,16 @@ export function TermsGrid({ card, agentAddress }: { card: CardState; agentAddres
   return (
     <div className="termsheet">
       <div className="tcol">
-        {row("Rails", rails)}
-        {t.pay && row("Per-charge cap", t.perTxMax ? `$${t.perTxMax}` : "uncapped")}
+        {row("rails", rails)}
+        {t.pay && row("per-charge cap", t.perTxMax ? `$${t.perTxMax}` : "uncapped")}
         {t.pay &&
-          row("Merchants", t.merchants?.length ? `${t.merchants.length} locked` : "any merchant", {
+          row("merchants", t.merchants?.length ? `${t.merchants.length} locked` : "any merchant", {
             title: t.merchants?.join("\n"),
           })}
-        {t.pay?.lifetime && row("Lifetime cap", `$${t.pay.lifetime.amount}`)}
+        {t.pay?.lifetime && row("lifetime cap", `$${t.pay.lifetime.amount}`)}
         {ct &&
           row(
-            "Contracts",
+            "contracts",
             <>
               {shortHex(ct.targets[0])}
               {ct.targets.length > 1 && <span className="w"> +{ct.targets.length - 1}</span>}
@@ -313,7 +105,7 @@ export function TermsGrid({ card, agentAddress }: { card: CardState; agentAddres
           )}
         {ct &&
           row(
-            "Methods",
+            "methods",
             <>
               {methodName(ct.selectors[0])}
               {ct.selectors.length > 1 && <span className="w"> +{ct.selectors.length - 1}</span>}
@@ -322,7 +114,7 @@ export function TermsGrid({ card, agentAddress }: { card: CardState; agentAddres
           )}
         {ct &&
           row(
-            "Token allowance",
+            "token allowance",
             ct.tokens?.length ? (
               <>
                 {ct.tokens.length}
@@ -335,15 +127,15 @@ export function TermsGrid({ card, agentAddress }: { card: CardState; agentAddres
           )}
         {ct &&
           row(
-            "Per-trade max",
+            "per-trade max",
             ct.perTradeMax ? `$${ct.perTradeMax}${perTradeEnforces(ct) ? "" : " · dormant (no usdc in scope)"}` : "uncapped",
           )}
       </div>
       <div className="tcol">
-        {row("Expires", expires)}
-        {row("Uses left", card.uses_remaining !== null ? card.uses_remaining : "unlimited")}
-        {row("Sub-cards", t.subcards === false ? "not allowed" : "allowed")}
-        {row("Delegate", agentAddress ? shortHex(agentAddress) : "·", { title: agentAddress, mono: true })}
+        {row("expires", expires)}
+        {row("uses left", card.uses_remaining !== null ? card.uses_remaining : "unlimited")}
+        {row("sub-cards", t.subcards === false ? "not allowed" : "allowed")}
+        {row("delegate", agentAddress ? shortHex(agentAddress) : "·", { title: agentAddress, mono: true })}
       </div>
     </div>
   );
@@ -402,7 +194,7 @@ export function RevokeButton({
 
   if (phase === "done") {
     return (
-      <span className="note" style={{ alignSelf: "center", fontSize: 12, color: "var(--body)" }} data-testid="revoke-done">
+      <span className="verbnote" data-testid="revoke-done">
         revoked ✓{" "}
         {tx && (
           <a href={`https://basescan.org/tx/${tx}`} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
@@ -414,7 +206,7 @@ export function RevokeButton({
   }
   if (phase === "signing" || phase === "submitting") {
     return (
-      <span className="note" style={{ alignSelf: "center", fontSize: 12, color: "var(--body)" }} data-testid="revoke-busy">
+      <span className="verbnote" data-testid="revoke-busy">
         {phase === "signing" ? "signing with your wallet…" : isSub ? "killing server-side…" : "submitting on-chain…"}
       </span>
     );
@@ -422,7 +214,7 @@ export function RevokeButton({
   if (phase === "confirm") {
     return (
       <span style={{ display: "inline-flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <span className="err" style={{ fontSize: 12 }}>
+        <span className="verbnote err">
           {isSub ? "kill this sub-card (and its descendants)?" : "permanently revoke on-chain (kills the whole subtree)?"}
         </span>
         <button className="danger-ghost" onClick={go} data-testid="revoke-confirm">
@@ -435,16 +227,16 @@ export function RevokeButton({
   return (
     <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
       <button
-        className="iconbtn danger"
+        className="vpill danger"
         disabled={!isSub && !embeddedReady}
         onClick={() => setPhase("confirm")}
         data-testid="revoke"
         title={isSub ? "revoke · server-side kill, instant" : "revoke · on-chain disableDelegation, signed by your embedded wallet"}
-        aria-label="revoke card"
       >
-        <IconRevoke />
+        <IconRevoke size={13} />
+        revoke
       </button>
-      {err && <span className="err" style={{ fontSize: 12 }}>revoke failed: {err}</span>}
+      {err && <span className="verbnote err">revoke failed: {err}</span>}
     </span>
   );
 }

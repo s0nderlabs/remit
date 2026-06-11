@@ -40,7 +40,7 @@ export function ConnectOverlay({
       <div className="overlay" role="dialog" aria-modal="true" aria-label="connect an agent" onClick={(e) => e.stopPropagation()}>
         <div className="ovhead">
           <div>
-            <span className="lbl">Connect an agent</span>
+            <span className="lbl">connect an agent</span>
             <h2 className="ovtitle">{card.name}</h2>
           </div>
           <button className="closex" onClick={onClose} aria-label="close">

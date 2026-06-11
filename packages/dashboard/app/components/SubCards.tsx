@@ -17,11 +17,9 @@ function rowClass(status: string): string {
 export function SubRows({
   node,
   kmap,
-  onIssue,
 }: {
   node: TreeNode;
   kmap: Map<string, string>;
-  onIssue?: () => void;
 }) {
   return (
     <>
@@ -71,15 +69,9 @@ export function SubRows({
             </Link>
           );
         })}
-        {onIssue && (
-          <button className="srow ghostrow" onClick={onIssue} data-testid="nav-issue">
-            <span className="ghostthumb" />
-            <span className="ghostlabel">+ Issue card</span>
-          </button>
-        )}
       </div>
       <div className="cascade">
-        <span className="data">ERC-7710</span> redelegation · revoke root, the tree dies (
+        <span className="data">erc-7710</span> redelegation · revoke root, the tree dies (
         <span className="data">NonceEnforcer</span> cascade)
       </div>
     </>

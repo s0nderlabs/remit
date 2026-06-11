@@ -2,6 +2,27 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.9.0] - 2026-06-11
+
+The dashboard rebuilt: one screen, one surface, designed against a studio-grade reference. Shipped through a 3-reviewer pre-release pass that confirmed zero behavior loss from the rebuild (every guard from the old UI verified re-established) plus 8 fixes applied.
+
+### Added
+
+- **The slab**: the whole cockpit is one contained surface on a quiet canvas, composed to fit a single viewport with no page scroll. Top zone: the selected card's dossier (status + verbs, the remaining figure with gauge and reset countdown, the period stats) beside the card bay; bottom zone, full width: a 30-day micro-bar spend chart with an ink scrubber + tooltip, the compact charge feed, and collapsible delegation-terms / sub-cards rows whose sheets overlay without moving the fold.
+- **Card carousel**: root cards swipe horizontally (scroll-snap, dot indicators, edge peek); selecting a card swaps the entire dossier with a staggered rise, and a revoked card sweeps the whole slab into its dead state. The carousel respects `prefers-reduced-motion`.
+- **"A card being born" issue modal**: the single create affordance opens a modal where a plain-language request drafts the terms (Venice compiler), the compiled terms appear as labeled chips while a miniature card materializes, and "review + sign" runs the normal client-signed issuance; a full manual composer stays available behind "set the terms yourself". The issued URL + connect handoff render in place.
+- Count-up theater plays once per session (calm daily driver); a `#demo` hash replays the full choreography for filming.
+
+### Changed
+
+- Navigation chrome removed: no navbar, no view tabs; the wordmark and account avatar float over the canvas. Fonts reduced to Funnel Display + Sora (mono and serif faces removed; hex renders in Sora).
+- Activity rows show rail chips (x402 / fiat) and receipts inline; the table is gone.
+
+### Fixed
+
+- A connect/rotate credential resolving after the user swiped to another card is dropped instead of opening the overlay with the wrong card's URL.
+- The connect reveal no longer shares a disabled-state with freeze/unfreeze; dead code from the old view system removed (orphaned CSS, dead stats computation, unreachable issue affordance); the issue modal focuses its textarea on open.
+
 ## [0.8.0] - 2026-06-11
 
 The Stripe demo lane: the simulated Visa leg becomes triggerable, spendable by agents, and (new) settled on-chain. Shipped through a 3-reviewer pre-release pass (11 findings fixed, 5 accepted with rationale) and a live drill: real Stripe test-mode authorizations end to end, three real USDC settlements on Base mainnet.

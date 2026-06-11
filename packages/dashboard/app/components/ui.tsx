@@ -33,7 +33,7 @@ export function shortHex(s: string | null | undefined, head = 6, tail = 4): stri
 
 /** derive the card "PAN": four 4-hex groups from a 0x address/id */
 export function panGroups(hex: string | null | undefined): string[] {
-  const h = (hex ?? "").replace(/^0x/i, "").toUpperCase().padEnd(16, "0");
+  const h = (hex ?? "").replace(/^0x/i, "").toLowerCase().padEnd(16, "0");
   return [`0x${h.slice(0, 4)}`, h.slice(4, 8), h.slice(8, 12), h.slice(12, 16)];
 }
 
@@ -59,15 +59,30 @@ export function periodLabel(seconds: number | undefined): string {
   return "mo";
 }
 
-// ---------- count-up ----------
+// ---------- count-up (the live-data theater) ----------
 
 const easeOut = (t: number) => 1 - Math.pow(2, -10 * t);
 
-/** odometer: tweens to `target` on change (mount = full sweep, updates = quick) */
+// The full odometer sweep plays once per session (the first dashboard entry) so the
+// daily driver stays calm afterwards; a "#demo" hash replays the full choreography
+// on every view for filming (hash, not ?query — Privy strips query params).
+let theaterDone = false;
+const demoMode = () => typeof window !== "undefined" && window.location.hash.includes("demo");
+const theaterActive = () => demoMode() || !theaterDone;
+
+/** odometer: full sweep on the first data landing of the session, quick tweens after */
 export function useCountUp(target: number, mountMs = 1400, updateMs = 450): number {
-  const [value, setValue] = useState(0);
-  const fromRef = useRef(0);
-  const mountedRef = useRef(false);
+  const sweepRef = useRef(theaterActive());
+  const sweptRef = useRef(false);
+  const [value, setValue] = useState(sweepRef.current ? 0 : target);
+  const fromRef = useRef(sweepRef.current ? 0 : target);
+  useEffect(() => {
+    // the session's theater window closes shortly after this view settles
+    const t = setTimeout(() => {
+      if (!demoMode()) theaterDone = true;
+    }, 3000);
+    return () => clearTimeout(t);
+  }, []);
   useEffect(() => {
     if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       setValue(target);
@@ -75,9 +90,17 @@ export function useCountUp(target: number, mountMs = 1400, updateMs = 450): numb
       return;
     }
     const from = fromRef.current;
-    const dur = mountedRef.current ? updateMs : mountMs;
-    mountedRef.current = true;
     if (from === target) return;
+    // the first nonzero target is the headline moment: full sweep when the
+    // theater is open, instant snap when it already played this session
+    const firstReal = !sweptRef.current;
+    if (firstReal) sweptRef.current = true;
+    const dur = firstReal ? (sweepRef.current ? mountMs : 0) : updateMs;
+    if (dur === 0) {
+      setValue(target);
+      fromRef.current = target;
+      return;
+    }
     let raf = 0;
     const t0 = performance.now();
     const tick = (now: number) => {
@@ -148,7 +171,7 @@ export function Guilloche({
           key={i}
           d={p.d}
           fill="none"
-          stroke={p.accent ? `url(#silk${gid})` : "#0A2540"}
+          stroke={p.accent ? `url(#silk${gid})` : "#141417"}
           strokeWidth={0.7}
           opacity={p.accent ? accentOpacity : inkOpacity}
         />
@@ -204,33 +227,70 @@ export function ChipDots() {
   );
 }
 
-// ---------- daily-spend bars ----------
-// Ink micro-bars (the variance is the information); the latest day in accent.
+// ---------- the barcode histogram ----------
+// Micro-bars at whisper volume; the scrubber owns all focus (a 1px ink line +
+// bold numeral tooltip). Single hue, no gridlines, no legend — the qclay chart.
 
-export function DailyBars({ values, width = 252, height = 56 }: { values: number[]; width?: number; height?: number }) {
+export function Barcode({
+  values,
+  labels,
+  width = 560,
+  height = 64,
+}: {
+  values: number[];
+  labels: string[];
+  width?: number;
+  height?: number;
+}) {
+  const [pick, setPick] = useState<number | null>(null);
   const max = Math.max(...values, 1e-9);
-  const pad = 1;
-  const gap = 2.6;
-  const bw = (width - 2 * pad - gap * (values.length - 1)) / values.length;
+  const n = values.length;
+  const gap = 3;
+  const bw = Math.max(1.6, (width - gap * (n - 1)) / n);
+  const step = bw + gap;
   return (
-    <svg className="spark" width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-      {values.map((v, i) => {
-        const h = Math.max(2, (v / max) * (height - 8));
-        const last = i === values.length - 1;
-        return (
-          <rect
-            key={i}
-            x={(pad + i * (bw + gap)).toFixed(1)}
-            y={(height - 2 - h).toFixed(1)}
-            width={bw.toFixed(1)}
-            height={h.toFixed(1)}
-            rx={1.8}
-            fill={last ? "#635BFF" : "#0A2540"}
-            opacity={last ? 1 : 0.55}
+    <div
+      className="barcode"
+      onMouseLeave={() => setPick(null)}
+      onMouseMove={(e) => {
+        const r = e.currentTarget.getBoundingClientRect();
+        const i = Math.round(((e.clientX - r.left) / r.width) * (n - 1));
+        setPick(Math.max(0, Math.min(n - 1, i)));
+      }}
+    >
+      <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden>
+        {values.map((v, i) => {
+          // zero days still print a 3px tick — the barcode texture is the point
+          const h = v > 0 ? Math.max(5, (v / max) * (height - 16)) : 3;
+          return (
+            <rect
+              key={i}
+              x={(i * step).toFixed(1)}
+              y={(height - h).toFixed(1)}
+              width={bw.toFixed(1)}
+              height={h.toFixed(1)}
+              rx={1}
+              className={i === pick ? "bk on" : "bk"}
+            />
+          );
+        })}
+        {pick !== null && (
+          <line
+            x1={(pick * step + bw / 2).toFixed(1)}
+            x2={(pick * step + bw / 2).toFixed(1)}
+            y1={0}
+            y2={height}
+            className="bkline"
           />
-        );
-      })}
-    </svg>
+        )}
+      </svg>
+      {pick !== null && (
+        <div className="bktip" style={{ left: `${(((pick * step + bw / 2) / width) * 100).toFixed(1)}%` }}>
+          <b>{fmtUsd(values[pick])}</b>
+          <span>{labels[pick]}</span>
+        </div>
+      )}
+    </div>
   );
 }
 

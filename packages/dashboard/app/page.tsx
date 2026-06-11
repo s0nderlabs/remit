@@ -1,17 +1,18 @@
 "use client";
 
-// Home: Privy login -> embedded wallet -> onboard (silent 7702) -> the stage.
-// Rail = nav + cards; stage = the card and its authority, views swap below.
+// Home: Privy login -> embedded wallet -> onboard (silent 7702) -> the dossier.
+// One slab carries everything; the card bay's carousel selects which root card
+// the dossier reads; the ghost row opens the issue modal (a card being born).
 // All v1 flows preserved (testids intact).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type TreeNode, type CardTermsInput, type CompileLabel, type CompileResult } from "@/lib/api";
 import { useRemit } from "./useRemit";
-import { Cockpit, SecHead } from "./components/Shell";
-import { TermsGrid, caveatCount } from "./components/Authority";
-import { SubRows } from "./components/SubCards";
-import { ChargesTable, MetricsRow, periodWindow, type FeedRow } from "./components/Activity";
-import { isDead, shortHex } from "./components/ui";
+import { Cockpit } from "./components/Shell";
+import { Dossier } from "./components/Dossier";
+import { ConnectChips } from "./components/Authority";
+import type { FeedRow } from "./components/Activity";
+import { ChipDots, Guilloche, isDead, periodLabel, shortHex } from "./components/ui";
 
 export default function Home() {
   const remit = useRemit();
@@ -97,7 +98,7 @@ export default function Home() {
         <div className="panel" style={{ textAlign: "center", padding: 40 }}>
           <span className="pill live" style={{ marginBottom: 16 }}>
             <b />
-            {onboarding ? "Activating" : "Activation pending"}
+            {onboarding ? "activating" : "activation pending"}
           </span>
           <p style={{ color: "var(--body)", fontSize: 13, marginTop: 14 }}>
             {onboarding
@@ -141,7 +142,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
       <h1 className="rv" style={{ animationDelay: ".08s", fontSize: 32 }}>
         remit
       </h1>
-      <p className="rv serif" style={{ animationDelay: ".16s", fontSize: 18, color: "var(--body)", marginTop: 6 }}>
+      <p className="rv serif" style={{ animationDelay: ".16s", fontSize: 16, marginTop: 6 }}>
         authority, lent not given.
       </p>
       <p className="rv" style={{ animationDelay: ".24s", color: "var(--body)", fontSize: 13, margin: "18px 0 26px" }}>
@@ -149,7 +150,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
       </p>
       <span className="rv" style={{ animationDelay: ".32s", display: "inline-block" }}>
         <button className="primary" onClick={onLogin} data-testid="login">
-          Sign in
+          sign in
         </button>
       </span>
     </main>
@@ -157,12 +158,6 @@ function Login({ onLogin }: { onLogin: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
-
-const TABS = [
-  { id: "overview", label: "Overview" },
-  { id: "subcards", label: "Sub-cards" },
-  { id: "activity", label: "Activity" },
-];
 
 function Dashboard({
   remit,
@@ -174,21 +169,27 @@ function Dashboard({
   onLogout: () => void;
 }) {
   const [tree, setTree] = useState<TreeNode[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [kAgent, setKAgent] = useState<string | undefined>(undefined);
   const [kmap, setKmap] = useState<Map<string, string>>(new Map());
   const [feed, setFeed] = useState<FeedRow[]>([]);
-  const [view, setView] = useState("overview");
+  const [selId, setSelId] = useState<string | null>(null);
   const [issueOpen, setIssueOpen] = useState(false);
 
-  // hero = the first live root (or the first root at all)
-  const heroNode = tree.find((n) => !isDead(n.card.status)) ?? tree[0] ?? null;
+  // hero = the carousel's selection; defaults to the first live root
+  const heroNode =
+    (selId ? tree.find((n) => n.card.card_id === selId) : undefined) ??
+    tree.find((n) => !isDead(n.card.status)) ??
+    tree[0] ??
+    null;
 
   const refresh = useCallback(async () => {
     try {
       const { tree } = await api.tree(address);
       setTree(tree);
       setError(null);
+      setLoaded(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -207,9 +208,9 @@ function Dashboard({
     ? [heroNode.card.card_id, ...heroNode.children.map((c) => c.card.card_id)].join(",")
     : "";
 
-  // When the HERO itself changes (revoke/nuke demotes it, or a new root takes
-  // over), drop the old hero's feed immediately — never show the previous
-  // card's spend and delegate attributed to the new one while the load runs.
+  // When the HERO itself changes (carousel selection, revoke/nuke demotes it, or
+  // a new root takes over), drop the old hero's feed immediately — never show the
+  // previous card's spend and delegate attributed to the new one while the load runs.
   useEffect(() => {
     setFeed([]);
     setKAgent(undefined);
@@ -247,93 +248,61 @@ function Dashboard({
     };
   }, [idsKey]);
 
-  const liveSubs = heroNode ? heroNode.children.filter((c) => !isDead(c.card.status)).length : 0;
-  const window_ = periodWindow(heroNode?.card ?? null);
-  const openIssue = () => setIssueOpen(true);
+  // first-run: no cards yet — the modal IS the front door
+  const modalOpen = issueOpen || (loaded && tree.length === 0);
 
   return (
     <Cockpit
-      card={heroNode?.card ?? null}
-      kAgent={kAgent}
-      roots={tree}
-      currentId={heroNode?.card.card_id ?? null}
       remit={remit}
       refresh={refresh}
       onLogout={onLogout}
       address={address}
-      subcardCount={liveSubs}
-      tabs={TABS}
-      view={view}
-      onView={setView}
-      onIssue={openIssue}
       nukeable={tree.some((n) => n.card.status === "active" || n.card.status === "frozen")}
     >
       {error && (
-        <p className="err" style={{ marginTop: 20 }}>
+        <p className="err" style={{ margin: "0 8px 10px" }}>
           api error: {error}
         </p>
       )}
 
-      {(issueOpen || !heroNode) && (
-        <section className="sec panel issuebox">
-          <div className="phead">
-            <h2>{heroNode ? "Issue a card" : "Issue your first card"}</h2>
-            <div className="r">
-              client-signed · the URL is the credential
-              {heroNode && (
-                <button className="closex" onClick={() => setIssueOpen(false)} aria-label="close">
-                  ✕
-                </button>
-              )}
-            </div>
-          </div>
-          <Composer remit={remit} address={address} onIssued={refresh} />
-        </section>
-      )}
+      <Dossier
+        node={heroNode}
+        kAgent={kAgent}
+        kmap={kmap}
+        feed={feed}
+        remit={remit}
+        refresh={refresh}
+        roots={tree}
+        currentId={heroId || null}
+        onSelect={setSelId}
+        onIssue={() => setIssueOpen(true)}
+      />
 
-      {heroNode && view === "overview" && (
-        <>
-          <section className="sec panel">
-            <SecHead title="This period" right={window_ ?? "all time"} />
-            <MetricsRow card={heroNode.card} feed={feed} liveSubs={liveSubs} />
-          </section>
-          <section className="sec panel">
-            <SecHead title="Delegation terms" right={`${caveatCount(heroNode.card)} terms on this card`} />
-            <TermsGrid card={heroNode.card} agentAddress={kAgent} />
-          </section>
-        </>
-      )}
-
-      {heroNode && view === "subcards" && (
-        <section className="sec panel">
-          <SecHead title="Sub-cards" right="caps narrow downward" />
-          <SubRows node={heroNode} kmap={kmap} onIssue={openIssue} />
-        </section>
-      )}
-
-      {heroNode && view === "activity" && (
-        <section className="sec panel">
-          <SecHead
-            title="Activity"
-            right={
-              <span className="pill live">
-                <b />
-                live
-              </span>
-            }
-          />
-          <ChargesTable rows={feed} />
-        </section>
+      {modalOpen && (
+        <IssueModal
+          remit={remit}
+          address={address}
+          firstCard={tree.length === 0}
+          onIssued={() => {
+            // refresh fills the tree; pin the modal open so the first-run path
+            // doesn't unmount it before the URL handoff is read
+            setIssueOpen(true);
+            return refresh();
+          }}
+          onClose={tree.length > 0 ? () => setIssueOpen(false) : undefined}
+        />
       )}
     </Cockpit>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Composer: client-signed issuance (prepare -> sign -> finalize), v1 logic.
-// Two ways in, one draft: describe the card in plain English (the Venice
-// compile box prefills the fields) or set the spec-sheet rows by hand —
-// card / pay / execute. Either way the user reviews every field and signs.
+// IssueModal: "a card being born". The plain-language textarea compiles via
+// Venice (api.compile) into a draft; the terms chips populate and a miniature
+// card face materializes; "review + sign" runs the EXISTING client-signed
+// issuance ceremony (prepare -> sign -> finalize). "edit terms yourself"
+// expands the full composer field set. After issue, the URL handoff renders
+// in place. All composer-* testids and the v1 guards preserved.
 // ---------------------------------------------------------------------------
 
 const PERIODS = [86400, 604800, 2592000];
@@ -362,14 +331,20 @@ const splitSelectors = (s: string): string[] => {
   return out;
 };
 
-function Composer({
+const periodWord = (s: number) => (s <= 86400 ? "a day" : s <= 604800 ? "a week" : "per 30 days");
+
+function IssueModal({
   remit,
   address,
+  firstCard,
   onIssued,
+  onClose,
 }: {
   remit: ReturnType<typeof useRemit>;
   address: string;
+  firstCard: boolean;
   onIssued: () => void;
+  onClose?: () => void; // absent on first-run: the modal is the only door
 }) {
   // card
   const [name, setName] = useState("agent card");
@@ -388,10 +363,32 @@ function Composer({
   const [tokens, setTokens] = useState("");
   const [perTrade, setPerTrade] = useState("");
 
-  const [draftN, setDraftN] = useState(0); // bumps on every applied draft (re-runs the flash)
+  // compile (Venice drafts · you sign)
+  const [intent, setIntent] = useState("");
+  const [compiling, setCompiling] = useState(false);
+  const [compileErr, setCompileErr] = useState<string | null>(null);
+  const [labels, setLabels] = useState<CompileLabel[]>([]);
+  const [warnings, setWarnings] = useState<string[]>([]);
+
+  const [draftN, setDraftN] = useState(0); // bumps on every applied draft (re-runs the flash + chips)
+  const [editOpen, setEditOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [issuedUrl, setIssuedUrl] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  // Escape closes (when closable) + the page behind never scrolls
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && onClose) onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
 
   function buildTerms(): CardTermsInput {
     const pay: NonNullable<CardTermsInput["pay"]> = {};
@@ -444,6 +441,24 @@ function Composer({
     setDraftN((n) => n + 1);
   }
 
+  async function compile() {
+    if (!intent.trim() || compiling) return;
+    setCompiling(true);
+    setCompileErr(null);
+    setLabels([]);
+    setWarnings([]);
+    try {
+      const r = await api.compile(intent.trim());
+      setLabels(r.labels);
+      setWarnings(r.warnings);
+      if (r.draft) applyDraft(r);
+    } catch (e) {
+      setCompileErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCompiling(false);
+    }
+  }
+
   async function issue() {
     setErr(null);
     setIssuedUrl(null);
@@ -482,6 +497,34 @@ function Composer({
     }
   }
 
+  // the miniature card face + chips materialize once terms exist
+  const drafted = draftN > 0;
+  const filled = drafted || editOpen;
+  const tg = splitList(targets);
+  const capLine = [
+    amount.trim() && parseFloat(amount) > 0
+      ? `$${amount.trim()} / ${periodLabel(period)}`
+      : lifetime.trim()
+        ? `$${lifetime.trim()} lifetime`
+        : tg.length
+          ? "execute only"
+          : "",
+    merchants.trim() ? `${splitList(merchants).length} merchants` : "any merchant",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const chips: string[] = [];
+  if (amount.trim() && parseFloat(amount) > 0) chips.push(`$${amount.trim()} ${periodWord(period)}`);
+  if (lifetime.trim()) chips.push(`$${lifetime.trim()} lifetime`);
+  if (perTx.trim()) chips.push(`≤ $${perTx.trim()} per charge`);
+  chips.push(merchants.trim() ? `${splitList(merchants).length} merchants` : "any merchant");
+  chips.push(
+    `expires ${new Date(Date.now() + expiryDays * 86400000).toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase()}`,
+  );
+  if (tg.length) chips.push(`${tg.length} contract${tg.length === 1 ? "" : "s"} in scope`);
+  if (perTrade.trim()) chips.push(`≤ $${perTrade.trim()} per trade`);
+  chips.push(subcards ? "sub-cards allowed" : "no sub-cards");
+
   const field = (label: string, el: React.ReactNode) => (
     <div className="field">
       <label>{label}</label>
@@ -490,194 +533,229 @@ function Composer({
   );
 
   return (
-    <>
-      <CompileBox onDraft={applyDraft} />
-      <div className="ordiv">
-        <span>or set the terms yourself</span>
-      </div>
-      <div className={`composer2${draftN ? " flash" : ""}`} key={draftN}>
-        <div className="crow">
-          <span className="cgroup">card</span>
-          {field("Name", <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: 150 }} data-testid="composer-name" />)}
-          {field(
-            "Expires · days",
-            <input type="number" value={expiryDays} onChange={(e) => setExpiryDays(Number(e.target.value))} style={{ width: 72 }} />,
-          )}
-          {field(
-            "Max uses",
-            <input value={maxUses} onChange={(e) => setMaxUses(e.target.value)} placeholder="∞" style={{ width: 72 }} data-testid="composer-maxuses" />,
-          )}
-          {field(
-            "Sub-cards",
-            <select value={subcards ? "yes" : "no"} onChange={(e) => setSubcards(e.target.value === "yes")}>
-              <option value="yes">allowed</option>
-              <option value="no">no</option>
-            </select>,
-          )}
-        </div>
-
-        <div className="crow">
-          <span className="cgroup">pay · usdc</span>
-          {field(
-            "Budget",
-            <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-amount" />,
-          )}
-          {field(
-            "Per",
-            <select value={period} onChange={(e) => setPeriod(Number(e.target.value))}>
-              <option value={86400}>day</option>
-              <option value={604800}>week</option>
-              <option value={2592000}>30 days</option>
-            </select>,
-          )}
-          {field(
-            "Lifetime cap",
-            <input value={lifetime} onChange={(e) => setLifetime(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-lifetime" />,
-          )}
-          {field("Per-charge max", <input value={perTx} onChange={(e) => setPerTx(e.target.value)} placeholder="none" style={{ width: 92 }} />)}
-          {field(
-            "Merchant lock",
-            <input value={merchants} onChange={(e) => setMerchants(e.target.value)} placeholder="0x…, 0x…" style={{ width: 170 }} />,
-          )}
-        </div>
-
-        <div className="crow">
-          <span className="cgroup">execute · contracts</span>
-          {field(
-            "Contracts",
-            <input className="wide" value={targets} onChange={(e) => setTargets(e.target.value)} placeholder="0x…, 0x…" data-testid="composer-targets" />,
-          )}
-          {field(
-            "Methods",
-            <input
-              className="wide"
-              value={selectors}
-              onChange={(e) => setSelectors(e.target.value)}
-              placeholder="approve(address,uint256), …"
-              data-testid="composer-selectors"
-            />,
-          )}
-          {field(
-            "Tokens · allowance",
-            <input value={tokens} onChange={(e) => setTokens(e.target.value)} placeholder="0x… · optional" style={{ width: 136 }} data-testid="composer-tokens" />,
-          )}
-          {field(
-            "Per-trade max",
-            <input value={perTrade} onChange={(e) => setPerTrade(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-pertrademax" />,
-          )}
-        </div>
-
-        <div className="cfoot">
-          <p className="chint">leave pay empty for an execute-only card · leave contracts empty for a pay-only card</p>
-          <button className="primary" onClick={issue} disabled={busy} data-testid="composer-issue">
-            {busy ? "signing…" : "Issue card"}
-          </button>
-        </div>
-      </div>
-      {err && <p className="err" style={{ marginTop: 12 }}>{err}</p>}
-      {issuedUrl && (
-        <div style={{ marginTop: 16, maxWidth: 560 }}>
-          <div className="ok" style={{ marginBottom: 8 }}>
-            card issued · hand this URL to your agent (it IS the credential):
+    <div
+      className="mscrim"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && onClose) onClose();
+      }}
+    >
+      <div className="modal" role="dialog" aria-modal="true" aria-label="issue a new card">
+        <div className="mhead">
+          <div>
+            <div className="mtitle">{firstCard ? "issue your first card" : "issue a new card"}</div>
+            <div className="msub">plain language, compiled to on-chain caveats · client-signed, the url is the credential</div>
           </div>
-          <div className="urlbox" data-testid="issued-url">
-            {issuedUrl}
+          {onClose && (
+            <button className="closex" onClick={onClose} aria-label="close">
+              ✕
+            </button>
+          )}
+        </div>
+
+        {issuedUrl ? (
+          <div style={{ marginTop: 18 }}>
+            <div className="ok" style={{ marginBottom: 8 }}>
+              card issued · hand this url to your agent (it is the credential):
+            </div>
+            <div className="urlbox" data-testid="issued-url">
+              {issuedUrl}
+            </div>
+            <div style={{ marginTop: 14 }}>
+              <ConnectChips url={issuedUrl} cardName={name} />
+            </div>
+            <div className="mfoot">
+              <button className="dbtn" onClick={() => onClose?.()}>
+                done
+              </button>
+            </div>
           </div>
-        </div>
-      )}
-    </>
-  );
-}
+        ) : (
+          <>
+            <textarea
+              className="dtext"
+              value={intent}
+              maxLength={2000}
+              // the modal's first focusable thing: keyboard users land here, not behind the scrim
+              autoFocus
+              placeholder='describe the card · "$5 a week for research apis, any merchant, expires in 30 days"'
+              onChange={(e) => setIntent(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) compile();
+              }}
+              data-testid="compile-intent"
+            />
+            <div className="drow">
+              <span className="mhint">venice drafts · you review the compiled terms before anything is signed</span>
+              <button
+                className={`dbtn${drafted ? " quiet" : ""}`}
+                onClick={compile}
+                disabled={compiling || !intent.trim()}
+                data-testid="compile-go"
+              >
+                {compiling ? "drafting…" : "draft terms"}
+              </button>
+            </div>
+            {compileErr && (
+              <p className="err" style={{ marginTop: 10 }}>
+                {compileErr}
+              </p>
+            )}
 
-// ---------------------------------------------------------------------------
-// CompileBox: describe the card in plain English; Venice drafts a plan, the
-// server resolves every name against its verified registry (the model never
-// supplies addresses), and the draft prefills the composer (#43). Never issues.
-// ---------------------------------------------------------------------------
+            {/* a card being born */}
+            <div className="born">
+              <div className={`minicard${filled ? " fill" : ""}`}>
+                <div className="mc-mark">remit</div>
+                <div className="mc-chip">
+                  <ChipDots />
+                </div>
+                <div className="mc-pan">0x••••&nbsp;&nbsp;••••&nbsp;&nbsp;••••</div>
+                <div className="mc-name">{name || "agent card"}</div>
+                <div className="mc-cap num">{capLine}</div>
+                <div className="mc-band">
+                  <Guilloche width={520} height={64} strands={9} amp={14} />
+                </div>
+              </div>
+              {filled && <TermChips key={`${draftN}-${editOpen}`} items={chips} />}
+              {labels.length > 0 && (
+                <div className="lblchips" data-testid="compile-labels">
+                  {labels.map((l) => (
+                    <span key={`${l.address}-${l.label}`} className="lblchip" title={`${l.address} · ${l.source}`}>
+                      <i className={`lk ${l.kind}`} />
+                      {l.label}
+                      <span className="data">{shortHex(l.address)}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {warnings.length > 0 && (
+                <ul className="warnlist" data-testid="compile-warnings">
+                  {warnings.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              )}
+              {drafted && (
+                <p className="cbnote">addresses resolve from a verified registry or your own text · the model never supplies them</p>
+              )}
+            </div>
 
-function CompileBox({ onDraft }: { onDraft: (r: CompileResult) => void }) {
-  const [intent, setIntent] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [labels, setLabels] = useState<CompileLabel[]>([]);
-  const [warnings, setWarnings] = useState<string[]>([]);
-  const [drafted, setDrafted] = useState(false);
+            <button className="ordiv" onClick={() => setEditOpen((v) => !v)}>
+              <span>{editOpen ? "hide the term sheet" : "edit terms yourself"}</span>
+            </button>
 
-  async function go() {
-    if (!intent.trim() || busy) return;
-    setBusy(true);
-    setErr(null);
-    setDrafted(false);
-    setLabels([]);
-    setWarnings([]);
-    try {
-      const r = await api.compile(intent.trim());
-      setLabels(r.labels);
-      setWarnings(r.warnings);
-      if (r.draft) {
-        onDraft(r);
-        setDrafted(true);
-      }
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
+            {editOpen && (
+              <div className={`composer2${draftN ? " flash" : ""}`} key={draftN}>
+                <div className="crow">
+                  <span className="cgroup">card</span>
+                  {field("name", <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: 150 }} data-testid="composer-name" />)}
+                  {field(
+                    "expires · days",
+                    <input type="number" value={expiryDays} onChange={(e) => setExpiryDays(Number(e.target.value))} style={{ width: 72 }} />,
+                  )}
+                  {field(
+                    "max uses",
+                    <input value={maxUses} onChange={(e) => setMaxUses(e.target.value)} placeholder="∞" style={{ width: 72 }} data-testid="composer-maxuses" />,
+                  )}
+                  {field(
+                    "sub-cards",
+                    <select value={subcards ? "yes" : "no"} onChange={(e) => setSubcards(e.target.value === "yes")}>
+                      <option value="yes">allowed</option>
+                      <option value="no">no</option>
+                    </select>,
+                  )}
+                </div>
 
-  return (
-    <div className="compilebox">
-      <div className="cbtop">
-        <span className="lbl">Describe the card</span>
-        <span className="cbven">venice drafts · you sign</span>
+                <div className="crow">
+                  <span className="cgroup">pay · usdc</span>
+                  {field(
+                    "budget",
+                    <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-amount" />,
+                  )}
+                  {field(
+                    "per",
+                    <select value={period} onChange={(e) => setPeriod(Number(e.target.value))}>
+                      <option value={86400}>day</option>
+                      <option value={604800}>week</option>
+                      <option value={2592000}>30 days</option>
+                    </select>,
+                  )}
+                  {field(
+                    "lifetime cap",
+                    <input value={lifetime} onChange={(e) => setLifetime(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-lifetime" />,
+                  )}
+                  {field("per-charge max", <input value={perTx} onChange={(e) => setPerTx(e.target.value)} placeholder="none" style={{ width: 92 }} />)}
+                  {field(
+                    "merchant lock",
+                    <input value={merchants} onChange={(e) => setMerchants(e.target.value)} placeholder="0x…, 0x…" style={{ width: 170 }} />,
+                  )}
+                </div>
+
+                <div className="crow">
+                  <span className="cgroup">execute · contracts</span>
+                  {field(
+                    "contracts",
+                    <input className="wide" value={targets} onChange={(e) => setTargets(e.target.value)} placeholder="0x…, 0x…" data-testid="composer-targets" />,
+                  )}
+                  {field(
+                    "methods",
+                    <input
+                      className="wide"
+                      value={selectors}
+                      onChange={(e) => setSelectors(e.target.value)}
+                      placeholder="approve(address,uint256), …"
+                      data-testid="composer-selectors"
+                    />,
+                  )}
+                  {field(
+                    "tokens · allowance",
+                    <input value={tokens} onChange={(e) => setTokens(e.target.value)} placeholder="0x… · optional" style={{ width: 136 }} data-testid="composer-tokens" />,
+                  )}
+                  {field(
+                    "per-trade max",
+                    <input value={perTrade} onChange={(e) => setPerTrade(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-pertrademax" />,
+                  )}
+                </div>
+                <p className="chint">leave pay empty for an execute-only card · leave contracts empty for a pay-only card</p>
+              </div>
+            )}
+
+            {err && (
+              <p className="err" style={{ marginTop: 12 }}>
+                {err}
+              </p>
+            )}
+
+            <div className="mfoot">
+              {onClose && (
+                <button className="mghost" onClick={onClose}>
+                  cancel
+                </button>
+              )}
+              <button className="dbtn" onClick={issue} disabled={busy} data-testid="composer-issue">
+                {busy ? "signing…" : "review + sign"}
+              </button>
+            </div>
+          </>
+        )}
       </div>
-      <div className="cbrow">
-        <textarea
-          value={intent}
-          rows={2}
-          maxLength={2000}
-          placeholder="$25 a week for api calls, can swap usdc to weth on uniswap up to $50 per trade, expires in 30 days"
-          onChange={(e) => setIntent(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) go();
-          }}
-          data-testid="compile-intent"
-        />
-        <button className="primary" onClick={go} disabled={busy || !intent.trim()} data-testid="compile-go">
-          {busy ? "drafting…" : "Draft terms"}
-        </button>
-      </div>
-      {err && (
-        <p className="err" style={{ marginTop: 10 }}>
-          {err}
-        </p>
-      )}
-      {drafted && (
-        <p className="ok" style={{ marginTop: 10 }}>
-          draft applied below · review every term before signing
-        </p>
-      )}
-      {labels.length > 0 && (
-        <div className="lblchips" data-testid="compile-labels">
-          {labels.map((l) => (
-            <span key={`${l.address}-${l.label}`} className="lblchip" title={`${l.address} · ${l.source}`}>
-              <i className={`lk ${l.kind}`} />
-              {l.label}
-              <span className="data">{shortHex(l.address)}</span>
-            </span>
-          ))}
-        </div>
-      )}
-      {warnings.length > 0 && (
-        <ul className="warnlist" data-testid="compile-warnings">
-          {warnings.map((w, i) => (
-            <li key={i}>{w}</li>
-          ))}
-        </ul>
-      )}
-      <p className="cbnote">addresses resolve from a verified registry or your own text · the model never supplies them</p>
     </div>
   );
 }
 
-// The wallet-level nuke verb lives in the avatar menu (Shell.tsx · NukeItem).
+// chips stagger in as the draft lands — mount with .in applied a frame later
+function TermChips({ items }: { items: string[] }) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setArmed(true));
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  return (
+    <div className="tchips num">
+      {items.map((s, i) => (
+        <span key={`${s}-${i}`} className={armed ? "in" : ""} style={{ transitionDelay: armed ? `${120 + i * 110}ms` : "0ms" }}>
+          {s}
+        </span>
+      ))}
+    </div>
+  );
+}
