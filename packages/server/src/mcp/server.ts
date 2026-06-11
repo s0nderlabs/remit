@@ -37,7 +37,15 @@ import {
 import type { AppDeps } from "../deps";
 import { spendDeps, spendKey } from "../deps";
 
-const SERVER_INFO = { name: "remit", version: "0.6.0" };
+const SERVER_INFO = { name: "remit", version: "0.7.0" };
+
+// Surfaced to clients at initialize. Claude Code's tool search (default-on since mid-2026)
+// keys discovery on this text and truncates at 2KB: keep it a compact routing guide.
+const INSTRUCTIONS = [
+  "remit is the agent's spending card: a scoped, revocable spending authority granted by the card owner. The connection itself is the card; it holds no funds of its own and every action is checked against the card's terms (per-payment cap, period budget, expiry, allowlists).",
+  "Tools: `card` reports status, terms and remaining budget (check it before the first spend). `pay` sends USDC to a recipient or settles an x402 payment requirement. `paid_fetch` fetches an HTTP resource and pays its 402 challenge automatically. `execute` calls an allowlisted contract within the card's contract terms. `issue_subcard` mints a narrower child card for a sub-agent and returns its connection URL (treat it as a secret). `revoke_subcard` kills a child card and its descendants instantly.",
+  "A frozen card still answers `card` but refuses spends. Refusals name the violated term; read the message before retrying.",
+].join("\n\n");
 
 // ---------------------------------------------------------------------------
 // Result helpers
@@ -87,7 +95,7 @@ export function cardUrl(secret: string): string {
 // ---------------------------------------------------------------------------
 
 export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
-  const server = new McpServer(SERVER_INFO);
+  const server = new McpServer(SERVER_INFO, { instructions: INSTRUCTIONS });
   const sd: SpendDeps = spendDeps(deps);
   const now = () => Math.floor(Date.now() / 1000);
   // serialize money-moving sections per card TREE: concurrent spends of the same

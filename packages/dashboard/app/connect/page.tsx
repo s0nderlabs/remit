@@ -10,6 +10,7 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { api, type CardState } from "@/lib/api";
+import { CopyButton } from "../components/Authority";
 import { useRemit } from "../useRemit";
 
 export default function ConnectPage() {
@@ -30,6 +31,46 @@ type RequestInfo = {
   expires_at: number;
 };
 
+// The post-approve state. Some clients never receive the browser redirect: OpenClaw
+// registers a loopback redirect_uri but runs no listener there (login --code is its only
+// completion route), and headless Hermes can't reach a local browser port at all. So the
+// success screen always SHOWS the authorization code; the redirect is an enhancement,
+// not the only carrier. The code is single-use, PKCE-bound and short-lived, so rendering
+// it to the user who just approved grants nothing the redirect URL didn't already carry.
+type Granted = {
+  redirectTo: string;
+  code: string | null;
+  loopback: boolean; // http://localhost|127.0.0.1|[::1] target: the redirect may land on a dead port
+  client: string | null;
+  restored?: boolean; // re-shown after the user navigated back: never auto-redirect again
+};
+
+// URL.hostname always returns IPv6 bracketed, so "[::1]" is the only v6 spelling to match
+const LOOPBACK = ["localhost", "127.0.0.1", "[::1]"];
+
+function parseGrant(redirectTo: string, client: string | null): Granted {
+  // regex, not new URL().searchParams: must survive custom-scheme URIs (cursor://) too
+  const m = redirectTo.match(/[?&]code=([^&#]+)/);
+  let code: string | null = null;
+  if (m) {
+    try {
+      code = decodeURIComponent(m[1]);
+    } catch {
+      code = m[1];
+    }
+  }
+  let loopback = false;
+  try {
+    const u = new URL(redirectTo);
+    loopback = u.protocol === "http:" && LOOPBACK.includes(u.hostname);
+  } catch {
+    // unparseable custom scheme: treat as app-handled, auto-redirect is fine
+  }
+  return { redirectTo, code, loopback, client };
+}
+
+const grantKey = (requestId: string) => `remit-grant-${requestId}`;
+
 function Consent() {
   const params = useSearchParams();
   const requestId = params.get("request");
@@ -39,7 +80,36 @@ function Consent() {
   const [cards, setCards] = useState<CardState[] | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const [phase, setPhase] = useState<"idle" | "submitting" | "redirecting">("idle");
+  const [granted, setGranted] = useState<Granted | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  // back-button recovery: if the redirect navigated to a dead loopback port and the user
+  // came back, re-show the success screen (and its code) instead of a stale consent form.
+  useEffect(() => {
+    if (!requestId) return;
+    const raw = sessionStorage.getItem(grantKey(requestId));
+    if (!raw) return;
+    try {
+      const saved = JSON.parse(raw) as Granted & { exp: number };
+      if (saved.exp > Date.now()) setGranted({ ...saved, restored: true });
+      else sessionStorage.removeItem(grantKey(requestId));
+    } catch {
+      sessionStorage.removeItem(grantKey(requestId));
+    }
+  }, [requestId]);
+
+  // auto-redirect ONLY for https/custom-scheme targets (those always resolve somewhere).
+  // Loopback targets never auto-redirect: whether a listener is actually running there is
+  // unknowable from here (OpenClaw and headless Hermes run none, and a client may omit or
+  // mislabel its DCR client_name), so the user keeps the code screen and continues by
+  // button. Restored grants (back-button after a dead redirect) never re-fire either.
+  useEffect(() => {
+    if (!granted || granted.loopback || granted.restored) return;
+    const t = setTimeout(() => {
+      window.location.href = granted.redirectTo;
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [granted]);
 
   useEffect(() => {
     if (!authenticated || !requestId) return;
@@ -61,13 +131,19 @@ function Consent() {
     setErr(null);
     try {
       const { redirect_to } = await api.oauthApprove(requestId, picked);
-      setPhase("redirecting");
-      window.location.href = redirect_to;
+      const g = parseGrant(redirect_to, info?.client_name ?? null);
+      // codes live ~120s server-side; keep the recovery copy a touch shorter
+      try {
+        sessionStorage.setItem(grantKey(requestId), JSON.stringify({ ...g, exp: Date.now() + 110_000 }));
+      } catch {
+        // storage full/blocked: the in-memory screen still shows the code
+      }
+      setGranted(g);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setPhase("idle");
     }
-  }, [requestId, picked]);
+  }, [requestId, picked, info]);
 
   const deny = useCallback(async () => {
     if (!requestId) return;
@@ -85,6 +161,60 @@ function Consent() {
 
   if (!requestId) {
     return <div className="panel mono">missing ?request parameter, start the connection from your agent.</div>;
+  }
+  if (granted) {
+    const openclaw = /openclaw/i.test(granted.client ?? "");
+    return (
+      <div className="panel" data-testid="granted">
+        <h2>card granted</h2>
+        {granted.code ? (
+          <>
+            <p className="mono" style={{ color: "#666" }}>
+              {openclaw
+                ? "your agent is waiting in the terminal · give it this code:"
+                : granted.loopback
+                  ? "press continue if your agent is listening locally · or give it this code if it asked for one:"
+                  : "returning you to the app · if it asks for a code, use this one:"}
+            </p>
+            <p
+              className="mono"
+              data-testid="auth-code"
+              style={{
+                margin: "6px 0",
+                padding: "10px 12px",
+                background: "var(--surface-warm)",
+                border: "1px solid var(--hairline)",
+                borderLeft: "3px solid var(--accent)",
+                borderRadius: 8,
+                color: "var(--ink)",
+                wordBreak: "break-all",
+                userSelect: "all",
+              }}
+            >
+              {granted.code}
+            </p>
+            <div className="row" style={{ gap: 8 }}>
+              <CopyButton text={granted.code} label="copy code" />
+              <button onClick={() => (window.location.href = granted.redirectTo)} data-testid="continue">
+                continue to app
+              </button>
+            </div>
+            <p className="mono" style={{ color: "#666", fontSize: 12, marginTop: 8 }}>
+              {openclaw
+                ? <>finish with <b>openclaw mcp login &lt;server&gt; --code &lt;code&gt;</b> · the code expires in ~2 minutes</>
+                : <>terminal clients take it like <b>… login &lt;server&gt; --code &lt;code&gt;</b> · expires in ~2 minutes · safe to close this tab once your agent confirms</>}
+            </p>
+          </>
+        ) : (
+          <p className="mono" style={{ color: "#666" }}>
+            returning you to the app…{" "}
+            <button onClick={() => (window.location.href = granted.redirectTo)} data-testid="continue">
+              continue
+            </button>
+          </p>
+        )}
+      </div>
+    );
   }
   if (!ready) return <div className="mono">loading…</div>;
   if (!authenticated) {

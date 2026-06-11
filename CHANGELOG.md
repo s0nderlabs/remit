@@ -2,6 +2,24 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.7.0] - 2026-06-11
+
+The MCP robustness release: remit's endpoint verified against the live protocol fingerprints of 13 real agent harnesses (Claude Code, claude.ai web, Codex, ChatGPT, OpenClaw, Hermes, Cursor, VS Code, Windsurf, Gemini CLI, Goose, opencode, Amp, Factory Droid), the gaps that sweep surfaced fixed, and the whole surface pinned by a permanent conformance suite. Shipped through the standard 3-reviewer pre-release pass (4 findings, all actioned).
+
+### Added
+
+- **Authorization code on the consent success screen**: clients that run no local OAuth callback listener previously dead-ended after approval (OpenClaw completes with `openclaw mcp login <name> --code <code>`; headless Hermes paste-back works the same way). The success screen now shows the single-use code with a copy button. Loopback redirect targets are never auto-navigated (continue by button, since a dead local port would swallow the code), https and custom-scheme targets still redirect automatically, and a back-button return re-shows the code instead of looping into the dead redirect.
+- **Harness conformance suite** (`packages/server/test/conformance.test.ts`, 39 tests): per-harness DCR redirect-URI matrix (fixed ports, random loopback ports, both OpenClaw host forms, ChatGPT's dynamic callback id, Cursor's custom scheme), full PKCE flows per redirect family, the 401 discovery-chain field-by-field, initialize across all four MCP protocol revisions, and an edge battery (stale session ids, batch frames, GET/DELETE, oversized bodies, Host allowlist, missing Accept values).
+- **Server `instructions` field**: Claude Code's default-on tool search keys discovery on it (2KB cap); remit now ships a compact routing guide for its tools at initialize.
+- **Per-harness connect surfaces**: the claude.ai chip opens the documented prefilled connector dialog, a VS Code one-click install link, codex/openclaw copy-commands (openclaw pinned to `--transport streamable-http`; it defaults to SSE otherwise), and a README install matrix with verified one-liners for seven more CLIs.
+
+### Fixed
+
+- **GET against the MCP endpoint hung forever**: the stateless transport never answered stream-open GETs (claude.ai and Claude Code send them routinely), leaving the client on a headerless socket. Both lanes now answer 405 with `Allow`, which SDK clients treat as "no notification stream offered" and continue over POSTs.
+- **Keep-alive socket desync after early-exit responses**: request bodies are drained before the transport runs (an early transport bail used to leave unread bytes that corrupted the next pooled request on the connection), and unread-body 413s carry `Connection: close` so compliant clients retire the socket.
+
+Verified without code changes: the redirect policy already accepts both OpenClaw loopback host forms (127.0.0.1 and localhost, port-agnostic), and Goose (rmcp 1.7.0) falls back to RFC 7591 dynamic registration against remit's CIMD-less authorization server (confirmed at source level), so Goose joins the OAuth column.
+
 ## [0.6.0] - 2026-06-11
 
 Three tracks land together: the Venice natural-language card compiler, advanced contract caveats (allowance tokens + a per-trade ceiling), and the dashboard catching up to everything the engine can do. Shipped through a 3-reviewer pre-release pass (13 findings fixed, 1 accepted as-is).

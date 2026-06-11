@@ -67,13 +67,27 @@ claude mcp add --transport http remit https://<host>/mcp \
 
 Lanes A and B work in Cursor, VS Code, Gemini CLI, Windsurf, claude.ai custom connectors, or any MCP client that speaks Streamable HTTP. Rotate the secret any time from the dashboard; the old URL dies instantly.
 
+Per-harness one-liners for Lane A (commands verified against each client, Jun 2026):
+
+```bash
+codex mcp add remit --url https://<host>/c/<card-secret>/mcp
+openclaw mcp add remit --url https://<host>/c/<card-secret>/mcp --transport streamable-http  # flag required: omitting it defaults to SSE
+hermes mcp add remit --url "https://<host>/c/<card-secret>/mcp"
+gemini mcp add -t http remit https://<host>/c/<card-secret>/mcp
+goose session --with-streamable-http-extension "https://<host>/c/<card-secret>/mcp"
+amp mcp add remit https://<host>/c/<card-secret>/mcp
+droid mcp add remit https://<host>/c/<card-secret>/mcp --type http
+```
+
+claude.ai web: Customize → Connectors → Add custom connector → paste the card URL (the dashboard's claude.ai chip opens that dialog prefilled). ChatGPT Developer Mode: create a connector with the card URL as No Authentication, or use Lane C for a real auth story.
+
 **Lane C: OAuth 2.1 (card-picker consent).** Add the bare endpoint with no credential:
 
 ```bash
 claude mcp add --transport http remit https://<host>/mcp
 ```
 
-The client discovers the OAuth lane (RFC 9728 protected-resource metadata on the `401`), registers itself (Dynamic Client Registration), and opens a browser. You sign in with your existing dashboard login and **pick which card to grant**. The agent receives a short-lived, card-scoped, independently revocable access token, never the raw card secret. This is the lane OAuth-only clients such as **ChatGPT** require; it also works in Claude Code, claude.ai, Cursor, and VS Code. The server is a self-hosted OAuth authorization server (public clients, PKCE S256, rotating refresh tokens); revoking the card kills every token issued for it.
+The client discovers the OAuth lane (RFC 9728 protected-resource metadata on the `401`), registers itself (Dynamic Client Registration), and opens a browser. You sign in with your existing dashboard login and **pick which card to grant**. The agent receives a short-lived, card-scoped, independently revocable access token, never the raw card secret. This is the lane OAuth-only clients such as **ChatGPT** require; it also works in Claude Code, claude.ai, Cursor, VS Code, Codex, Gemini CLI, Goose, opencode, Amp, and Factory Droid. Clients that complete OAuth out-of-band read the authorization code straight off the consent success screen: OpenClaw finishes with `openclaw mcp login remit --code <code>` (it runs no callback listener), and headless Hermes uses its paste-back flow the same way. The server is a self-hosted OAuth authorization server (public clients, PKCE S256, rotating refresh tokens); revoking the card kills every token issued for it.
 
 ## Architecture
 

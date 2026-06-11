@@ -484,16 +484,28 @@ export function ConnectChips({
   const slug = cardName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "card";
   const name = `remit-${slug}`;
   const cli = `claude mcp add --transport http ${name} ${url}`;
+  const codex = `codex mcp add ${name} --url ${url}`;
+  // openclaw defaults HTTP servers to SSE when the transport flag is omitted — keep it explicit
+  const openclaw = `openclaw mcp add ${name} --url ${url} --transport streamable-http`;
   const json = JSON.stringify({ mcpServers: { [name]: { type: "http", url } } }, null, 2);
   const cursorLink = `cursor://anysphere.cursor-deeplink/mcp/install?name=${encodeURIComponent(name)}&config=${
     typeof window === "undefined" ? "" : btoa(JSON.stringify({ url }))
   }`;
+  // documented prefill deep link (claude.com/docs/connectors/building/directory-vs-custom);
+  // the dialog opens prefilled, the user just presses Add
+  const claudeAiLink = `https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=${encodeURIComponent(name)}&connectorUrl=${encodeURIComponent(url)}`;
+  // protocol-handler form: the WHOLE server config (name included) as one URL-encoded JSON
+  const vscodeLink = `vscode:mcp/install?${encodeURIComponent(JSON.stringify({ name, type: "http", url }))}`;
   return (
     <div data-testid="connect-panel">
       <div className="bchips">
         <CopyButton text={url} label="copy url" />
         <CopyButton text={cli} label="claude code" />
+        <button onClick={() => { window.open(claudeAiLink, "_blank", "noopener"); }}>claude.ai</button>
+        <CopyButton text={codex} label="codex" />
         <button onClick={() => { window.location.href = cursorLink; }}>cursor</button>
+        <button onClick={() => { window.location.href = vscodeLink; }}>vs code</button>
+        <CopyButton text={openclaw} label="openclaw" />
         <CopyButton text={json} label="json" />
         {onRotate && (
           <button onClick={onRotate} disabled={busy} data-testid="rotate-url" title="invalidate this URL and mint a new one">
@@ -501,7 +513,7 @@ export function ConnectChips({
           </button>
         )}
       </div>
-      <p className="bchint">claude.ai web: settings → connectors → add custom connector → paste the url.</p>
+      <p className="bchint">claude.ai opens a prefilled connector dialog · codex/openclaw copy install commands · json fits most other clients.</p>
     </div>
   );
 }

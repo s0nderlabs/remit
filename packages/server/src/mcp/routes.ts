@@ -79,9 +79,15 @@ export function mcpRoutes(deps: AppDeps, oauth: OAuthStore): Hono {
     }
 
     // body-size cap (Content-Length fast path; chunked bodies are bounded by the
-    // edge/runtime request buffer — this is the cheap pre-parse guard, not the only one)
+    // edge/runtime request buffer — this is the cheap pre-parse guard, not the only one).
+    // The oversized body is deliberately never read, which leaves its bytes on the
+    // keep-alive socket; a client that reuses that socket parses its next response
+    // against garbage (431s, empirically reproduced). Connection: close tells the
+    // client not to reuse it — spec-compliant HTTP stacks honor the header and drop
+    // the socket from their pool (Bun's server won't force-close on its own; a client
+    // that ignores the header desyncs only itself).
     const len = Number(c.req.header("content-length") ?? 0);
-    if (len > MAX_BODY_BYTES) return c.json({ error: "payload too large" }, 413);
+    if (len > MAX_BODY_BYTES) return c.json({ error: "payload too large" }, 413, { Connection: "close" });
 
     if (!credential) {
       await drain(c);
@@ -117,13 +123,23 @@ export function mcpRoutes(deps: AppDeps, oauth: OAuthStore): Hono {
       await drain(c);
       return unauthorized(c, "card revoked", oauthLane);
     }
-    // POST = the actual JSON-RPC calls. The transport's long-lived GET (SSE stream) and
-    // its reconnects must not eat the per-card budget, or a flapping stream 429s the
-    // agent's own legitimate spends.
+    // Stateless transport: there is no server->client notification stream to attach a
+    // GET to, and letting the per-request transport take the GET leaves the client
+    // hanging with no response headers at all (empirically verified). 405 is the spec
+    // answer for "no stream offered"; SDK clients log it and continue over POSTs.
+    if (c.req.method === "GET") {
+      return c.json({ error: "method not allowed" }, 405, { Allow: "POST, DELETE" });
+    }
+    // POST = the actual JSON-RPC calls; the per-card ceiling applies to those only.
     if (c.req.method === "POST" && !perCard.allow(card.id, nowMs)) {
       await drain(c);
       return c.json({ error: "rate limit exceeded for this card" }, 429);
     }
+    // Buffer the body NOW (Hono memoizes it, the transport's own read hits the cache):
+    // if the transport bails before reading — e.g. 406 on a client that omits the SSE
+    // Accept value — the unread bytes would desync this keep-alive socket and 431 the
+    // next pooled request (empirically reproduced in the conformance suite).
+    if (c.req.method === "POST") await drain(c);
     // frozen cards still ANSWER (locked): `card` reports status, spend tools refuse
     const server = buildMcpServer(deps, card);
     const transport = new StreamableHTTPTransport({ sessionIdGenerator: undefined });

@@ -118,7 +118,9 @@ export function oauthRoutes(deps: AppDeps, oauth: OAuthStore): Hono {
   // hard body cap on every credential-bearing POST, BEFORE any parse. Unlike a
   // Content-Length check this also bounds chunked/streamed bodies with no length header.
   const cap = (max: number) =>
-    bodyLimit({ maxSize: max, onError: (c) => c.json({ error: "invalid_request", error_description: "request body too large" }, 413) });
+    // Connection: close — the over-limit remainder is never read off the socket; the
+    // header tells compliant clients not to reuse the connection (see mcp/routes 413)
+    bodyLimit({ maxSize: max, onError: (c) => c.json({ error: "invalid_request", error_description: "request body too large" }, 413, { Connection: "close" }) });
   app.use("/register", cap(64 * 1024));
   app.use("/token", cap(16 * 1024));
   app.use("/revoke", cap(16 * 1024));
