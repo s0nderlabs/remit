@@ -245,6 +245,23 @@ button:focus-visible, a:focus-visible {
 }
 .card.face { position: absolute; inset: 0; backface-visibility: hidden; -webkit-backface-visibility: hidden; }
 .card.face.back { transform: rotateY(180deg); display: flex; flex-direction: column; }
+/* iOS Safari composites the BACKFACE of overflow-hidden faces despite
+   backface-visibility (long-standing WebKit bug · both faces bled through on
+   the flipped card on iPhone). Belt-and-braces: swap face visibility right at
+   the flip's 90° crossover (~0.1s into the 0.7s fast-out ease), so the off
+   face can never paint regardless of backface handling. The transition list
+   re-declares the .card filter/opacity tweens · `transition` is one property
+   and this more-specific rule would otherwise erase them. */
+.cardflip .card.face.front {
+  visibility: visible;
+  transition: filter 0.6s var(--ease), opacity 0.6s var(--ease), visibility 0s 0.1s;
+}
+.cardflip .card.face.back {
+  visibility: hidden;
+  transition: filter 0.6s var(--ease), opacity 0.6s var(--ease), visibility 0s 0.1s;
+}
+.cardflip.flipped .card.face.front { visibility: hidden; }
+.cardflip.flipped .card.face.back { visibility: visible; }
 .card .band {
   position: absolute; left: 0; right: 0; bottom: 0; height: 64px; opacity: 0.9;
   -webkit-mask-image: linear-gradient(to top, #000 45%, transparent 92%);
