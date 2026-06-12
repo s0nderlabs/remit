@@ -5,11 +5,14 @@
 // the dossier reads; the ghost row opens the issue modal (a card being born).
 // All v1 flows preserved (testids intact).
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { api, type TreeNode, type CardTermsInput, type CompileLabel, type CompileResult } from "@/lib/api";
 import { useRemit } from "./useRemit";
 import { Boot } from "./components/Boot";
+import { FirstRun } from "./components/FirstRun";
+import { Login } from "./components/Login";
+import { Tour, type TourStep } from "./components/Tour";
 import { Cockpit } from "./components/Shell";
 import { Dossier, bayAggregate } from "./components/Dossier";
 import { ConnectChips, UrlBox } from "./components/Authority";
@@ -207,28 +210,42 @@ export default function Home() {
   );
 }
 
-function Login({ onLogin }: { onLogin: () => void }) {
-  return (
-    <main className="narrow" style={{ textAlign: "center", paddingTop: 140 }}>
-      <h1 className="rv" style={{ animationDelay: ".08s", fontSize: 32 }}>
-        remit
-      </h1>
-      <p className="rv serif" style={{ animationDelay: ".16s", fontSize: 16, marginTop: 6 }}>
-        Authority, lent not given.
-      </p>
-      <p className="rv" style={{ animationDelay: ".24s", color: "var(--body)", fontSize: 13, margin: "18px 0 26px" }}>
-        Scoped, revocable spending cards for your agents · email or Google · no seed phrase
-      </p>
-      <span className="rv" style={{ animationDelay: ".32s", display: "inline-block" }}>
-        <button className="primary" onClick={onLogin} data-testid="login">
-          Sign In
-        </button>
-      </span>
-    </main>
-  );
-}
-
 // ---------------------------------------------------------------------------
+
+// the live-tour script: each step spotlights real chrome (anchored by
+// data-tour attributes) over the specimen card
+const TOUR_STEPS: TourStep[] = [
+  {
+    key: "deck",
+    target: "[data-tour=deck]",
+    title: "The Deck",
+    body: "Each card is a scoped spending authority that lives on-chain. Swipe through the stack · the + at the edge issues another. This one is a specimen, just for the tour.",
+  },
+  {
+    key: "readings",
+    target: "[data-tour=readings]",
+    title: "The Budget",
+    body: "What the card may still spend this period · enforced on-chain, drawn down live with every charge, reset on schedule.",
+  },
+  {
+    key: "verbs",
+    target: "[data-tour=verbs]",
+    title: "The Verbs",
+    body: "Connect hands the card to an agent over MCP (the URL is the credential). Freeze pauses it. Revoke kills it for good · sub-cards die with it.",
+  },
+  {
+    key: "panes",
+    target: "[data-tour=panes]",
+    title: "The Ledger",
+    body: "Activity is the attributed feed (who spent what, settled where). Delegation Terms is the signed sheet. Sub-Cards is the tree your agents grow.",
+  },
+  {
+    key: "wallet",
+    target: "[data-tour=wallet]",
+    title: "Your Wallet",
+    body: "Your address, USDC balance, and sign out live here · and once cards exist, the nuke that revokes them all in one transaction.",
+  },
+];
 
 function Dashboard({
   remit,
@@ -248,11 +265,44 @@ function Dashboard({
   const [selId, setSelId] = useState<string | null>(null);
   const [issueOpen, setIssueOpen] = useState(false);
 
+  // The live tour runs over a specimen card when the wallet has none yet:
+  // local-only, never on-chain, gone the moment the tour ends. Detail polls
+  // 404 on its id and are swallowed; the overlay blocks every verb anyway.
+  const [touring, setTouring] = useState(false);
+  const specimen = useMemo<TreeNode>(
+    () => ({
+      card: {
+        card_id: "specimen",
+        name: "specimen",
+        status: "active",
+        terms: { pay: { period: { amount: "25", seconds: 604800 } }, subcards: true },
+        remaining_this_period: "18.40",
+        remaining_lifetime: null,
+        period_resets_at: Math.floor(Date.now() / 1000) + 4 * 86400 + 7 * 3600,
+        expires_at: null,
+        uses_remaining: null,
+        subcards: [],
+      },
+      children: [],
+    }),
+    [],
+  );
+  const showTree = touring && tree.length === 0 ? [specimen] : tree;
+
+  // stable tour handlers: inline closures here would put a fresh reference in
+  // Tour's effect deps every 3s poll re-render, re-firing scrollIntoView and
+  // the measure cycle for the whole tour
+  const endTour = useCallback(() => setTouring(false), []);
+  const tourIssue = useCallback(() => {
+    setTouring(false);
+    setIssueOpen(true);
+  }, []);
+
   // hero = the carousel's selection; defaults to the first live root
   const heroNode =
-    (selId ? tree.find((n) => n.card.card_id === selId) : undefined) ??
-    tree.find((n) => !isDead(n.card.status)) ??
-    tree[0] ??
+    (selId ? showTree.find((n) => n.card.card_id === selId) : undefined) ??
+    showTree.find((n) => !isDead(n.card.status)) ??
+    showTree[0] ??
     null;
 
   const refresh = useCallback(async () => {
@@ -288,7 +338,8 @@ function Dashboard({
     setKmap(new Map());
   }, [heroId]);
   useEffect(() => {
-    if (!idsKey) {
+    // the specimen is local-only: polling its id would just 422 every tick
+    if (!idsKey || idsKey === "specimen") {
       setFeed([]);
       setKAgent(undefined);
       setKmap(new Map());
@@ -319,8 +370,32 @@ function Dashboard({
     };
   }, [idsKey]);
 
-  // first-run: no cards yet · the modal IS the front door
-  const modalOpen = issueOpen || (loaded && tree.length === 0);
+  // first-run: no cards yet · a dismissible two-step welcome (what remit is,
+  // then the wallet address + live USDC readout) replaces the old hard-gated
+  // composer. Seen-state is per wallet; skipping lands on the empty deck,
+  // which carries its own Issue CTA.
+  const frKey = `remit-firstrun-${address.toLowerCase()}`;
+  const [tourDone, setTourDone] = useState(true); // assume seen until storage answers
+  useEffect(() => {
+    setTourDone(localStorage.getItem(frKey) === "1");
+  }, [frKey]);
+  const dismissTour = useCallback(() => {
+    localStorage.setItem(frKey, "1");
+    setTourDone(true);
+  }, [frKey]);
+  const firstRunOpen = loaded && tree.length === 0 && !tourDone;
+
+  // ?tour=1 replays the live tour on demand (over real cards when they exist,
+  // the specimen otherwise) · waits for the tree so the chrome is anchored.
+  // It marks first-run seen (the welcome would paint OVER the tour at z-100)
+  // and strips the param so Skip stays skipped across reloads.
+  useEffect(() => {
+    if (loaded && new URLSearchParams(window.location.search).get("tour") === "1") {
+      dismissTour();
+      setTouring(true);
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, [loaded, dismissTour]);
 
   return (
     <Cockpit
@@ -344,7 +419,7 @@ function Dashboard({
         feed={feed}
         remit={remit}
         refresh={refresh}
-        roots={tree}
+        roots={showTree}
         currentId={heroId || null}
         onSelect={setSelId}
         onIssue={() => setIssueOpen(true)}
@@ -355,8 +430,25 @@ function Dashboard({
         }}
       />
 
+      {touring && <Tour steps={TOUR_STEPS} onDone={endTour} onIssue={tourIssue} />}
+
       <AnimatePresence>
-        {modalOpen && (
+        {firstRunOpen && (
+          <FirstRun
+            key="firstrun"
+            address={address}
+            onIssue={() => {
+              dismissTour();
+              setIssueOpen(true);
+            }}
+            onExplore={dismissTour}
+            onTour={() => {
+              dismissTour();
+              setTouring(true);
+            }}
+          />
+        )}
+        {issueOpen && (
           <IssueModal
             key="issue"
             remit={remit}
@@ -368,7 +460,7 @@ function Dashboard({
               setIssueOpen(true);
               return refresh();
             }}
-            onClose={tree.length > 0 ? () => setIssueOpen(false) : undefined}
+            onClose={() => setIssueOpen(false)}
           />
         )}
       </AnimatePresence>
@@ -424,7 +516,7 @@ function IssueModal({
   address: string;
   firstCard: boolean;
   onIssued: () => void;
-  onClose?: () => void; // absent on first-run: the modal is the only door
+  onClose?: () => void; // always provided since the first-run welcome took over onboarding · closing lands on the empty deck's own Issue CTA
 }) {
   // card
   const [name, setName] = useState("Agent Card");

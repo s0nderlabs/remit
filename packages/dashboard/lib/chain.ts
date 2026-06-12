@@ -15,4 +15,8 @@ export const BASE_RPC = process.env.NEXT_PUBLIC_BASE_RPC ?? "https://mainnet.bas
 // DelegationManager (same on Base + Base Sepolia), verified Jun 5 2026.
 export const DELEGATION_MANAGER = "0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3" as Address;
 
+// Base mainnet USDC. Lowercase on purpose: consumers compare it against
+// user-supplied token lists case-insensitively.
+export const USDC_BASE = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" as Address;
+
 export const publicClient = createPublicClient({ chain: base, transport: http(BASE_RPC) });

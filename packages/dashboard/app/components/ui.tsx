@@ -233,6 +233,48 @@ export function IconRevoke({ size = 15 }: { size?: number }) {
   );
 }
 
+/** Clipboard write that degrades to the legacy textarea path (insecure
+ * contexts, denied permission) · resolves false when nothing worked, so the
+ * caller only shows the copied state on a real copy. */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+// sized by CSS at the call site (connect chips, the wallet address row)
+export function IconCopy() {
+  return (
+    <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="4.5" y="4.5" width="8" height="8" rx="2" />
+      <path d="M9.5 3V2.5a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V8A1.5 1.5 0 0 0 3 9.5h.5" />
+    </svg>
+  );
+}
+
+export function IconCheck() {
+  return (
+    <svg viewBox="0 0 12 10" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M1.5 5.5l3 3 6-7" />
+    </svg>
+  );
+}
+
 // ---------- dot-matrix chip ----------
 // Animated: the chip "ticks" like data moving through it · each beat one base
 // dot rests while two transient dots light up. Deterministic per frame, slow,

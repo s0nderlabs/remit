@@ -16,9 +16,11 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
+import { erc20Abi, formatUnits, type Address } from "viem";
 import { api } from "@/lib/api";
+import { publicClient, USDC_BASE } from "@/lib/chain";
 import type { useRemit } from "../useRemit";
-import { shortHex } from "./ui";
+import { copyText, IconCheck, IconCopy, shortHex } from "./ui";
 import { ThemeToggle } from "./Theme";
 import { DangerModal, type DangerPhase } from "./Confirm";
 
@@ -103,6 +105,27 @@ function ProfileMenu({
   // the portal needs the document; the anchor pins the fixed menu to the avatar
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+  // the wallet's USDC, read once per menu open (one balanceOf against Base) ·
+  // the last value holds across reopens so the figure never flashes empty
+  const [usdc, setUsdc] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  // a same-tab account switch must never show the previous wallet's figure
+  useEffect(() => setUsdc(null), [address]);
+  useEffect(() => {
+    if (!open || !address) return;
+    let live = true;
+    publicClient
+      .readContract({ address: USDC_BASE, abi: erc20Abi, functionName: "balanceOf", args: [address as Address] })
+      .then((v) => {
+        if (live) setUsdc(formatUnits(v, 6));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [open, address]);
+  const bal = usdc === null ? null : Number(usdc);
+  const balFig = bal === null ? "–" : bal > 0 && bal < 0.01 ? "<$0.01" : `$${bal.toFixed(2)}`;
   const btnRef = useRef<HTMLButtonElement>(null);
   const [anchor, setAnchor] = useState<React.CSSProperties | null>(null);
   // the anchor is captured at open; a resize would detach the menu from the avatar
@@ -128,7 +151,7 @@ function ProfileMenu({
   };
   return (
     <div className="profile">
-      <button ref={btnRef} className="avatarbtn" onClick={toggle} aria-label="Account" data-testid="profile">
+      <button ref={btnRef} className="avatarbtn" onClick={toggle} aria-label="Account" data-testid="profile" data-tour="wallet">
         <span className="avatar" />
       </button>
       {mounted &&
@@ -151,6 +174,30 @@ function ProfileMenu({
                       {aggregate && <span className="proagg">{aggregate}</span>}
                     </span>
                   </div>
+                  {address && (
+                    <div className="prowallet">
+                      <div className="probal">
+                        <span className="probalfig" data-testid="wallet-balance">
+                          {balFig}
+                        </span>
+                        <span className="proballbl">USDC on Base</span>
+                      </div>
+                      <button
+                        className={`proaddr${copied ? " done" : ""}`}
+                        title="Copy your wallet address"
+                        data-testid="wallet-address"
+                        onClick={async () => {
+                          if (!(await copyText(address))) return;
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 1500);
+                        }}
+                      >
+                        <span className="proaddrtext">{address}</span>
+                        {copied ? <IconCheck /> : <IconCopy />}
+                      </button>
+                      <p className="pronote">Send USDC on Base to this address to fund your cards</p>
+                    </div>
+                  )}
                   {onLogout && (
                     <button
                       className="proitem"

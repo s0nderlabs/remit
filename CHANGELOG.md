@@ -2,6 +2,23 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.13.0] - 2026-06-12
+
+Round six: the sign-in becomes the landing, and first-run stops being a hostage situation. A three-candidate blind design pass picked "The Counter"; the forced first-card composer gave way to a welcome flow, a funding step with a live balance, and a guided spotlight tour over a specimen card. Shipped through a 3-finder review workflow (15 findings, 12 fixed).
+
+### Added
+
+- **A real sign-in screen**: split title card with the type column toward the center and the actual dashboard card (Visa face, ticking chip, hover-flowing silk band) resting tilted on the right. The background is the silk spectrum grown into weather: three pre-blurred gradient beams drifting on compositor-only transforms (the page-scale animated SVG guilloche stuttered and is banned), flowing in from the right and dissolving just past the wordmark. Works in light and INK dark.
+- **First-run welcome**: a fresh wallet now gets a two-step modal: what remit is (Issue / Connect / Control), then Fund Your Wallet with the full address as a copy row and a LIVE USDC balance that ticks up when funding lands (3s `balanceOf` poll). Funding is honestly skippable since issuance is a free signature. Seen-state persists per wallet; Escape skips; body scroll locks.
+- **A live guided tour**: five spotlight steps glide across the real chrome (deck → budget → verbs → ledger → wallet), each cutout explained by a floating tip. On a zero-card wallet the tour runs over a local-only specimen card so the full anatomy renders; the specimen never touches the server (detail/fiat polls short-circuit). `?tour=1` replays the tour any time and strips itself from the URL so a skip stays skipped.
+- **Wallet block in the avatar menu**: live USDC balance (one read per menu open, reset on account switch), full-address copy row, and a funding note · the address a user needs is now always one click away.
+- A shared `copyText` helper that falls back to the legacy textarea path when the Clipboard API is unavailable, so copy affordances only show the check on a real copy.
+
+### Changed
+
+- **The forced first-card composer is gone**: the issue modal is always closable, and the empty deck carries its own "Issue Your First Card" button, so no state is a dead end.
+- The card's silk flows only under the pointer everywhere (the dashboard grammar); the login background is the page's only always-moving layer, and it respects reduced-motion.
+
 ## [0.12.0] - 2026-06-12
 
 Round five: the boot screen becomes a brand moment, the demo merchant joins the design system on its own domain, and the README turns judge-facing. Shipped through a 3-finder review workflow (8 verified findings, 5 fixed).

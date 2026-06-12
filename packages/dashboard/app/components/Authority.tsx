@@ -7,8 +7,9 @@
 
 import { useState } from "react";
 import { api, type CardState } from "@/lib/api";
+import { USDC_BASE } from "@/lib/chain";
 import type { useRemit } from "../useRemit";
-import { IconRevoke, isDead, shortHex } from "./ui";
+import { IconCheck, IconCopy, IconRevoke, isDead, shortHex } from "./ui";
 import { DangerModal, type DangerPhase } from "./Confirm";
 
 type Remit = ReturnType<typeof useRemit>;
@@ -34,7 +35,6 @@ export function caveatCount(card: CardState): number {
 // v1 enforces the per-trade cap on USDC allowances only (Base mainnet USDC); a card
 // whose scope can't grant a USDC allowance carries the cap as dormant config, so the
 // headline figure must not present it as a live ceiling.
-const USDC_BASE = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 const APPROVE_SIG = "approve(address,uint256)";
 export function perTradeEnforces(ct: NonNullable<CardState["terms"]["contract"]>): boolean {
   if (!ct.perTradeMax) return false;
@@ -332,23 +332,6 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
     >
       {copied ? "Copied ✓" : label}
     </button>
-  );
-}
-
-function IconCopy() {
-  return (
-    <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <rect x="4.5" y="4.5" width="8" height="8" rx="2" />
-      <path d="M9.5 3V2.5a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V8A1.5 1.5 0 0 0 3 9.5h.5" />
-    </svg>
-  );
-}
-
-function IconCheck() {
-  return (
-    <svg viewBox="0 0 12 10" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M1.5 5.5l3 3 6-7" />
-    </svg>
   );
 }
 

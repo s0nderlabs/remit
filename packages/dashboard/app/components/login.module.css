@@ -1,0 +1,252 @@
+/* The sign-in screen · "The Counter" (login round 3, elpabl0's pick).
+   Split title card: a bigger, simpler type column sitting toward the center;
+   the REAL dashboard card (Visa face) resting tilted right; the silk grown
+   into page weather: blurred spectrum beams flowing in from the right and
+   dying just past the wordmark. The blueprint grid/crop-marks are gone · the
+   wash replaced that vocabulary. Tokens only; the spectrum is the page's
+   only color, in both themes. */
+
+.stage {
+  position: relative;
+  height: 100vh;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+/* ---------- the silk beams: in from the right, dead past the wordmark ----------
+   The card keeps the woven guilloche (hover); the page gets the same spectrum
+   as weather. Blur renders once; ONLY transform/opacity animate (compositor). */
+
+.aurora {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, transparent 5%, rgba(0, 0, 0, 0.4) 20%, #000 48%);
+  mask-image: linear-gradient(to right, transparent 5%, rgba(0, 0, 0, 0.4) 20%, #000 48%);
+}
+
+.aurora i {
+  position: absolute;
+  display: block;
+  border-radius: 999px;
+  filter: blur(72px);
+  will-change: transform, opacity;
+}
+
+/* the dominant ribbon: warm head sweeping the upper field, reaching the words */
+.beamA {
+  width: 92vw;
+  height: 30vh;
+  right: -12vw;
+  top: 10vh;
+  background: linear-gradient(
+    100deg,
+    rgba(255, 178, 62, 0) 2%,
+    #ffb23e 14%,
+    #ff5c8a 44%,
+    #e14fd7 70%,
+    rgba(225, 79, 215, 0) 94%
+  );
+  opacity: 0.4;
+  transform: rotate(14deg);
+  animation: beamdriftA 13s ease-in-out infinite alternate;
+}
+
+/* the counter-flow: cool tail crossing the lower field */
+.beamB {
+  width: 78vw;
+  height: 26vh;
+  right: -8vw;
+  bottom: 6vh;
+  background: linear-gradient(
+    78deg,
+    rgba(45, 159, 247, 0) 4%,
+    #2d9ff7 26%,
+    #7a5cff 62%,
+    rgba(122, 92, 255, 0) 92%
+  );
+  opacity: 0.32;
+  transform: rotate(-12deg);
+  animation: beamdriftB 17s ease-in-out infinite alternate;
+}
+
+/* the bright core where the flows pass · the magenta heart, breathing */
+.beamC {
+  width: 30vw;
+  height: 20vh;
+  right: 24vw;
+  top: 40vh;
+  background: radial-gradient(closest-side, #e14fd7 0%, rgba(255, 92, 138, 0.6) 55%, rgba(255, 92, 138, 0) 100%);
+  opacity: 0.28;
+  animation: beamdriftC 11s ease-in-out infinite alternate;
+}
+
+@keyframes beamdriftA {
+  from {
+    transform: rotate(14deg) translate3d(4%, -3%, 0);
+    opacity: 0.32;
+  }
+  to {
+    transform: rotate(7deg) translate3d(-12%, 9%, 0);
+    opacity: 0.46;
+  }
+}
+
+@keyframes beamdriftB {
+  from {
+    transform: rotate(-12deg) translate3d(-5%, 4%, 0);
+    opacity: 0.26;
+  }
+  to {
+    transform: rotate(-5deg) translate3d(11%, -9%, 0);
+    opacity: 0.38;
+  }
+}
+
+@keyframes beamdriftC {
+  from {
+    transform: translate3d(6%, -5%, 0) scale(0.9);
+    opacity: 0.2;
+  }
+  to {
+    transform: translate3d(-18%, 12%, 0) scale(1.25);
+    opacity: 0.34;
+  }
+}
+
+/* INK dark: the beams glow instead of wash · slightly dimmer, same spectrum */
+:global([data-theme="dark"]) .beamA { opacity: 0.3; }
+:global([data-theme="dark"]) .beamB { opacity: 0.25; }
+:global([data-theme="dark"]) .beamC { opacity: 0.2; }
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora i { animation: none; }
+}
+
+/* ---------- left: the type column, toward the center ---------- */
+
+.type {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 46%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 48px 24px 48px clamp(72px, 16vw, 280px);
+}
+
+.wm {
+  font-size: 56px;
+  line-height: 1;
+  letter-spacing: -0.025em;
+}
+
+.tag {
+  margin-top: 14px;
+  font-size: 16px;
+  font-weight: 400;
+  color: var(--body);
+}
+
+.lede {
+  margin-top: 30px;
+  max-width: 430px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--body);
+}
+
+.quiet {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--label);
+}
+
+.ctarow {
+  margin-top: 36px;
+  display: inline-block;
+}
+
+.cta {
+  padding: 11px 30px;
+  font-size: 14px;
+}
+
+/* ---------- right: the card on the weather ---------- */
+
+.counter {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.frame {
+  position: relative;
+  width: 448px;
+  aspect-ratio: 1.586;
+}
+
+/* the card itself: the dashboard object, resting at a slight tilt */
+.tilt {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-4deg);
+}
+
+.cardobj {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  box-shadow:
+    0 24px 44px -22px rgba(20, 20, 23, 0.25),
+    0 2px 8px rgba(20, 20, 23, 0.05);
+}
+
+:global([data-theme="dark"]) .cardobj {
+  box-shadow:
+    0 26px 48px -20px rgba(0, 0, 0, 0.6),
+    0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+/* ---------- the stack (narrow viewports): type first, card under ---------- */
+
+@media (max-width: 900px) {
+  .stage {
+    flex-direction: column;
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .aurora {
+    -webkit-mask-image: linear-gradient(to top, #000 40%, transparent 96%);
+    mask-image: linear-gradient(to top, #000 40%, transparent 96%);
+  }
+
+  .type {
+    flex: none;
+    padding: 72px 28px 6px;
+  }
+
+  .wm { font-size: 44px; }
+
+  .counter {
+    flex: none;
+    height: 440px;
+    margin-top: 8px;
+  }
+
+  .frame {
+    width: min(330px, 82vw);
+  }
+}

@@ -92,7 +92,8 @@ export function Dossier({
   // cached for the session so swapping back never flickers the PAN
   const [fiatMap, setFiatMap] = useState<Map<string, FiatCard>>(new Map());
   useEffect(() => {
-    if (!heroId || fiatMap.has(heroId)) return;
+    // "specimen" is the tour's local-only card · it has no server row to fetch
+    if (!heroId || heroId === "specimen" || fiatMap.has(heroId)) return;
     let live = true;
     api
       .fiatCard(heroId)
@@ -189,7 +190,7 @@ export function Dossier({
 
         {card ? (
           <>
-            <div className="dbody-wrap">
+            <div className="dbody-wrap" data-tour="readings">
               <AnimatePresence initial={false}>
                 <HeadBody key={card.card_id} card={card} />
               </AnimatePresence>
@@ -208,12 +209,17 @@ export function Dossier({
           <div className="heroempty">
             <h1>No Cards Yet</h1>
             <p>Issue your first card and hand it to an agent · scoped, revocable, dead on revoke</p>
+            {onIssue && (
+              <button className="dbtn heroissue" onClick={onIssue} data-testid="empty-issue">
+                Issue Your First Card
+              </button>
+            )}
           </div>
         )}
       </section>
 
       <div className="bottom">
-        <div className="tabrow" role="tablist" aria-label="Card details">
+        <div className="tabrow" role="tablist" aria-label="Card details" data-tour="panes">
           {tabs.map((t) => (
             <button
               key={t.key}
@@ -346,7 +352,7 @@ function Carousel({
   }
 
   return (
-    <div className="bay">
+    <div className="bay" data-tour="deck">
       <div className="stack" ref={stackRef}>
         {roots.map((n, i) => {
           const d = i - idx;
@@ -516,7 +522,7 @@ function Verbs({
     : undefined;
 
   return (
-    <div className="verbcol">
+    <div className="verbcol" data-tour="verbs">
       <div className="verbs">
         {dead ? (
           <>

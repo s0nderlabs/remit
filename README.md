@@ -10,7 +10,7 @@ Built on MetaMask Smart Accounts (ERC-7710), settled gaslessly by 1Shot, pays th
 
 | Surface | URL |
 |---|---|
-| Dashboard (issue + manage cards) | https://remit.s0nderlabs.xyz |
+| Dashboard (issue + manage cards · a fresh sign-in gets a guided welcome, funding step, and live tour) | https://remit.s0nderlabs.xyz |
 | Demo merchant (accepts the cards' Visas) | https://shop.s0nderlabs.xyz |
 | API + MCP endpoint | https://remit-api.s0nderlabs.xyz |
 

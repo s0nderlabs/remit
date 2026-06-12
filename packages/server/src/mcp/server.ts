@@ -38,7 +38,7 @@ import type { AppDeps } from "../deps";
 import { spendDeps, spendKey } from "../deps";
 import { recentFiatDecision } from "../stripe/decisions";
 
-const SERVER_INFO = { name: "remit", version: "0.12.0" };
+const SERVER_INFO = { name: "remit", version: "0.13.0" };
 
 // Surfaced to clients at initialize. Claude Code's tool search (default-on since mid-2026)
 // keys discovery on this text and truncates at 2KB: keep it a compact routing guide.
