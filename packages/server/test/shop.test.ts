@@ -93,9 +93,9 @@ describe("shop", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { merchant: string; products: Array<{ id: string; name: string; price: string }> };
     expect(body.merchant).toBe(SHOP_MERCHANT);
-    expect(body.products.length).toBe(3);
-    expect(body.products.find((p) => p.id === "espresso")!.price).toBe("0.02");
-    expect(body.products.find((p) => p.id === "render-rig")!.price).toBe("49.00");
+    expect(body.products.length).toBe(6);
+    expect(body.products.find((p) => p.id === "espresso")!.price).toBe("0.05");
+    expect(body.products.find((p) => p.id === "stand")!.price).toBe("4.90");
   });
 
   test("checkout with the matching card: approved, correct amount + merchant on the authorization", async () => {
@@ -106,10 +106,10 @@ describe("shop", () => {
     expect(body.approved).toBe(true);
     expect(body.reason).toBe("approved"); // no cached decision in this fake -> generic reason
     expect(body.last4).toBe("0005");
-    expect((body.product as { price: string }).price).toBe("0.02");
+    expect((body.product as { price: string }).price).toBe("0.05");
     const call = fake.authCalls[fake.authCalls.length - 1]!;
     expect(call.cardId).toBe("ic_demo_1");
-    expect(call.amountCents).toBe(2);
+    expect(call.amountCents).toBe(5);
     expect(call.merchantName).toBe(SHOP_MERCHANT);
   });
 

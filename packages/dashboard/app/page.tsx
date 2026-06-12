@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { api, type TreeNode, type CardTermsInput, type CompileLabel, type CompileResult } from "@/lib/api";
 import { useRemit } from "./useRemit";
+import { Boot } from "./components/Boot";
 import { Cockpit } from "./components/Shell";
 import { Dossier, bayAggregate } from "./components/Dossier";
 import { ConnectChips, UrlBox } from "./components/Authority";
@@ -116,65 +117,93 @@ export default function Home() {
     })();
   }, [probed, authenticated, address, did, embeddedReady, onboarded, sign7702, signOnboardProof, retryNonce]);
 
-  if (!ready) return <Centered note="Loading…" slow={slow} onReset={reset} />;
-  if (!authenticated) return <Login onLogin={login} />;
+  // The boot layer rides ON TOP of whichever screen comes next. Gates map to
+  // honest progress steps; once the last gate passes, the seal closes (held a
+  // beat) and only then does the layer blur out - over the login, activation
+  // panel, or dashboard already mounted underneath. A handoff, not a swap.
+  const gate = !ready
+    ? { p: 0.15, note: "Waking the session" }
+    : !authenticated
+      ? null
+      : !address
+        ? { p: 0.45, note: "Creating your embedded wallet" }
+        : !probed && !onboarded
+          ? { p: 0.75, note: "Finding your cards" }
+          : null;
+  const gateOpen = gate !== null;
+  const [bootDone, setBootDone] = useState(false); // seal closed + the beat elapsed
+  useEffect(() => {
+    if (gateOpen) {
+      setBootDone(false);
+      return;
+    }
+    const t = setTimeout(() => setBootDone(true), 600);
+    return () => clearTimeout(t);
+  }, [gateOpen]);
 
-  if (!address) return <Centered note="Creating your embedded wallet…" slow={slow} onReset={reset} />;
-  if (!onboarded && !probed) return <Centered note="Loading…" slow={slow} onReset={reset} />;
-  if (!onboarded) {
-    return (
-      <main className="narrow" data-testid="onboarding">
-        <div className="panel" style={{ textAlign: "center", padding: 40 }}>
-          <span className="pill live" style={{ marginBottom: 16 }}>
-            <b />
-            {onboarding ? "Activating" : "Activation Pending"}
-          </span>
-          <p style={{ color: "var(--body)", fontSize: 13, marginTop: 14 }}>
-            {onboarding
-              ? "Signing your 7702 authorization · silent, grants nothing on its own"
-              : "Waiting for your embedded wallet"}
+  const screen = !ready ? null : !authenticated ? (
+    <Login onLogin={login} />
+  ) : !address || (!probed && !onboarded) ? null : !onboarded ? (
+    <main className="narrow" data-testid="onboarding">
+      <div className="panel" style={{ textAlign: "center", padding: 40 }}>
+        <span className="pill live" style={{ marginBottom: 16 }}>
+          <b />
+          {onboarding ? "Activating" : "Activation Pending"}
+        </span>
+        <p style={{ color: "var(--body)", fontSize: 13, marginTop: 14 }}>
+          {onboarding
+            ? "Signing your 7702 authorization · silent, grants nothing on its own"
+            : "Waiting for your embedded wallet"}
+        </p>
+        {onboardErr && (
+          <p className="err" style={{ marginTop: 12 }}>
+            Onboard failed: {onboardErr}{" "}
+            <button
+              style={{ marginLeft: 8 }}
+              onClick={() => {
+                onboardingRef.current = false;
+                setOnboardErr(null);
+                setRetryNonce((n) => n + 1);
+              }}
+            >
+              Retry
+            </button>
           </p>
-          {onboardErr && (
-            <p className="err" style={{ marginTop: 12 }}>
-              Onboard failed: {onboardErr}{" "}
-              <button
-                style={{ marginLeft: 8 }}
-                onClick={() => {
-                  onboardingRef.current = false;
-                  setOnboardErr(null);
-                  setRetryNonce((n) => n + 1);
-                }}
-              >
-                Retry
-              </button>
-            </p>
-          )}
-        </div>
-      </main>
-    );
-  }
-
-  return <Dashboard remit={remit} address={address} onLogout={logout} />;
-}
-
-function Centered({ note, slow, onReset }: { note: string; slow?: boolean; onReset?: () => void }) {
-  return (
-    <main className="narrow" style={{ textAlign: "center" }}>
-      <span style={{ color: "var(--body)", fontSize: 13 }}>{note}</span>
-      {slow && (
-        <div className="bootstuck" data-testid="boot-stuck">
-          <p>Still going · the session on this device may be wedged.</p>
-          <div className="row" style={{ justifyContent: "center" }}>
-            <button onClick={() => window.location.reload()}>Reload</button>
-            {onReset && (
-              <button onClick={onReset} data-testid="boot-reset">
+        )}
+        {/* a 7702 signing wedge hangs WITHOUT throwing: the watchdog needs a
+            surface here too, not only on the boot layer */}
+        {slow && (
+          <div className="bootstuck" data-testid="onboard-stuck">
+            <p>Still going · the session on this device may be wedged.</p>
+            <div className="row" style={{ justifyContent: "center" }}>
+              <button onClick={() => window.location.reload()}>Reload</button>
+              <button onClick={reset} data-testid="onboard-reset">
                 Sign Out and Start Over
               </button>
-            )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </main>
+  ) : (
+    <Dashboard remit={remit} address={address} onLogout={logout} />
+  );
+
+  return (
+    <>
+      {screen}
+      <AnimatePresence>
+        {(gate || !bootDone) && (
+          <Boot
+            key="boot"
+            progress={gate ? gate.p : 1}
+            note={gate ? gate.note : "Ready"}
+            slow={slow && gateOpen}
+            onReset={reset}
+          />
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 

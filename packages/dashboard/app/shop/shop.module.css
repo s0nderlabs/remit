@@ -1,119 +1,140 @@
-/* /shop: generic-merchant skin. Deliberately plain: system-ui, light, flat.
-   Every rule here overrides the remit globals (porcelain canvas, pill buttons,
-   blurple focus) so nothing of the dashboard's look leaks through. */
+/* /shop: the demo merchant ("s0nder supply co."), riding the remit design
+   system: same tokens, same pill buttons, same inset inputs, light + INK dark.
+   A sibling storefront rather than a foreign one; the foot note says honestly
+   what it is (test-mode Visa, on-chain settlement). Buttons and inputs inherit
+   the globals vocabulary; this module only does layout + shop surfaces. */
 
 .wrap {
   min-height: 100vh;
-  background: #fafafa;
-  color: #1d1d1f;
-  font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
-  font-size: 15px;
-  line-height: 1.5;
-  padding: 48px 20px 80px;
+  background: var(--page);
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.55;
+  padding: 64px 24px 90px;
 }
 
-.inner { max-width: 760px; margin: 0 auto; }
+.inner { max-width: 880px; margin: 0 auto; }
 
-.brand { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; }
-.tag { color: #6e6e73; margin-top: 2px; font-size: 14px; }
+.brand {
+  font-family: var(--font-display), sans-serif;
+  font-weight: 600;
+  font-size: 26px;
+  letter-spacing: -0.01em;
+}
+.tag { color: var(--label); margin-top: 4px; font-size: 13.5px; }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 14px;
-  margin-top: 28px;
+  margin-top: 30px;
 }
 
 .product {
-  background: #fff;
-  border: 1px solid #e3e3e6;
-  border-radius: 10px;
+  background: var(--canvas);
+  border: 1px solid var(--edge);
+  border-radius: 18px;
+  box-shadow: var(--shadow-panel);
   padding: 18px 16px 16px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  transition: border-color 0.25s var(--ease);
 }
-.pname { font-weight: 600; }
-.pprice { color: #6e6e73; font-size: 14px; margin-bottom: 10px; }
+.product:hover { border-color: var(--hairline-strong); }
+.pname { font-weight: 600; font-size: 13.5px; }
+.pprice {
+  font-family: var(--font-display), sans-serif;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-weight: 500;
+  color: var(--body);
+  font-size: 15px;
+  margin: 3px 0 16px;
+}
+.buy { margin-top: auto; align-self: flex-start; padding: 7px 16px; }
+.buy.active { border-color: var(--ink); }
+.again { padding: 7px 16px; }
 
-/* buttons: flat rectangles, never the dashboard pill */
-.buy,
-.pay,
-.again {
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 600;
-  border-radius: 7px;
-  border: 1px solid #d6d6da;
-  background: #fff;
-  color: #1d1d1f;
-  padding: 8px 16px;
-  cursor: pointer;
-  box-shadow: none;
-  transition: background 0.15s ease;
+/* ghost catalog while the products load: static, no shimmer theater */
+.skel {
+  background: var(--canvas);
+  border: 1px solid var(--edge);
+  border-radius: 18px;
+  box-shadow: var(--shadow-panel);
+  padding: 18px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
-.buy:hover, .again:hover { background: #f2f2f4; border-color: #c9c9cf; }
-.buy.active { border-color: #1d1d1f; }
-
-.pay {
-  background: #1d1d1f;
-  border-color: #1d1d1f;
-  color: #fff;
-  width: 100%;
-  padding: 10px 16px;
-}
-.pay:hover { background: #333; }
-.pay:disabled { opacity: 0.45; cursor: default; }
+.skel i { display: block; height: 11px; border-radius: 6px; background: var(--inset); }
+.skel i:first-child { width: 70%; }
+.skel i:nth-child(2) { width: 36%; }
+.skel i:last-child { width: 52px; height: 28px; border-radius: 999px; margin-top: 14px; }
 
 .panel {
-  margin-top: 22px;
-  background: #fff;
-  border: 1px solid #e3e3e6;
-  border-radius: 10px;
-  padding: 20px;
-  max-width: 420px;
+  margin-top: 26px;
+  background: var(--canvas);
+  border: 1px solid var(--edge);
+  border-radius: 20px;
+  box-shadow: var(--shadow-panel);
+  padding: 22px;
+  max-width: 460px;
 }
-.ptitle { font-weight: 600; margin-bottom: 14px; }
+.ptitle { font-weight: 600; font-size: 14px; margin-bottom: 16px; }
 
-.fields { display: flex; flex-direction: column; gap: 10px; }
+.fields { display: flex; flex-direction: column; gap: 12px; }
 .exprow { display: flex; gap: 10px; }
 .exprow > label { flex: 1; }
 
-.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #6e6e73; }
-.field input {
-  font-family: inherit;
-  font-size: 15px;
-  color: #1d1d1f;
-  background: #fff;
-  border: 1px solid #d6d6da;
-  border-radius: 7px;
-  padding: 9px 11px;
+.field { display: flex; flex-direction: column; gap: 5px; font-size: 11px; font-weight: 500; color: var(--label); }
+.field input { width: 100%; }
+
+.pay {
+  background: var(--ink);
+  color: var(--on-ink);
+  border-color: transparent;
   width: 100%;
-  box-shadow: none;
+  padding: 10px 16px;
+  box-shadow: 0 1px 3px rgba(20, 20, 23, 0.18);
 }
-.field input:focus { outline: none; border-color: #1d1d1f; box-shadow: none; }
+.pay:hover { background: var(--ink-press); border-color: transparent; }
 
-.payrow { margin-top: 14px; }
+.payrow { margin-top: 16px; }
 
-/* result states: calm, no gradients */
-.result {
-  margin-top: 14px;
-  border-radius: 7px;
-  padding: 12px 14px;
-  font-size: 14px;
+.result { margin-top: 14px; border-radius: 13px; padding: 12px 14px; font-size: 13px; }
+.approved { background: var(--accent-tint); color: var(--accent); }
+.declined { background: var(--danger-tint); color: var(--danger); }
+.authid {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.8;
+  word-break: break-all;
+  font-variant-numeric: tabular-nums lining-nums;
 }
-.approved { background: #eef7ee; border: 1px solid #cfe6cf; color: #2c6b32; }
-.declined { background: #fbefef; border: 1px solid #ecd3d3; color: #a13c3c; }
-.authid { display: block; margin-top: 4px; font-size: 12.5px; opacity: 0.85; word-break: break-all; }
 
-.quiet { margin-top: 18px; color: #6e6e73; font-size: 14px; }
+.quiet { margin-top: 18px; color: var(--label); font-size: 13px; }
+
+/* the honesty line: what this storefront actually is */
+.foot {
+  margin-top: 48px;
+  padding-top: 18px;
+  border-top: 1px solid var(--hairline-soft);
+  color: var(--label);
+  font-size: 12px;
+  line-height: 1.65;
+  max-width: 600px;
+}
+.foot a { color: var(--body); text-decoration: none; font-weight: 500; }
+.foot a:hover { color: var(--ink); }
 
 @media (max-width: 540px) {
-  .wrap { padding: 32px 14px 60px; }
-  .grid { grid-template-columns: 1fr; }
+  .wrap { padding: 40px 16px 64px; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 }
 
-/* iOS focus-zoom guard: 16px controls on touch devices (matches globals.css) */
+/* iOS focus-zoom guard, kept module-local on purpose: globals.css carries the
+   same rule today, but /shop must stay zoom-safe even if it ever leaves the
+   root layout */
 @media (pointer: coarse) {
   .field input { font-size: 16px; }
 }

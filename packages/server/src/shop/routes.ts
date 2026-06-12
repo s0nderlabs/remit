@@ -18,14 +18,18 @@ const credentialsEqual = (a: string, b: string): boolean =>
 
 export const SHOP_MERCHANT = "s0nder supply co.";
 
-// demo pricing: cents-scale so a settled purchase (price + ~0.011 USDC relayer fee)
-// stays affordable on a lightly-funded demo wallet. render-rig is the decline beat:
-// priced over any demo card's budget but UNDER the test Issuing balance, so the
-// decline comes from OUR webhook (over_period_limit), not Stripe's balance check.
+// demo pricing: everything at or under $5.00, because approved charges settle as
+// REAL on-chain USDC (price + ~0.011 relayer fee) from a lightly-funded demo wallet.
+// The decline beat comes from the card's budget, not the catalog: issue the demo
+// card with a budget below the dearest item (e.g. $3/wk) and "stand" declines
+// from OUR webhook (over_period_limit), never Stripe's balance check.
 export const SHOP_PRODUCTS = [
-  { id: "espresso", name: "double espresso", priceCents: 2 },
-  { id: "keycaps", name: "artisan keycap set", priceCents: 5 },
-  { id: "render-rig", name: "render rig (refurb)", priceCents: 4900 },
+  { id: "espresso", name: "Double Espresso", priceCents: 5 },
+  { id: "stickers", name: "Sticker Pack", priceCents: 25 },
+  { id: "notebook", name: "Field Notebook", priceCents: 90 },
+  { id: "keycaps", name: "Artisan Keycap Set", priceCents: 150 },
+  { id: "cable", name: "Braided Desk Cable", priceCents: 275 },
+  { id: "stand", name: "Headphone Stand, Walnut", priceCents: 490 },
 ];
 
 // integer math (no float division): the money discipline everywhere else is decimal

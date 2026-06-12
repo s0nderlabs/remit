@@ -2,6 +2,23 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.12.0] - 2026-06-12
+
+Round five: the boot screen becomes a brand moment, the demo merchant joins the design system on its own domain, and the README turns judge-facing. Shipped through a 3-finder review workflow (8 verified findings, 5 fixed).
+
+### Added
+
+- **A real loading screen**: the bare "Loading…" text is gone. The boot layer carries the wordmark and a seal ring that draws with honest gate progress (Privy init → wallet creation → card probe), the core filling as the seal closes; the layer then blurs out over the already-mounted screen, a handoff rather than a swap. The stuck-session watchdog renders its Reload / Sign Out recovery on the boot layer AND on the activation panel (a silent 7702-signing wedge previously had no escape hatch). The exiting layer is hit-transparent, so the revealed screen is interactive from its first frame.
+- **The shop on its own domain**: `shop.s0nderlabs.xyz` serves the storefront at its root via a `proxy.ts` host rewrite (any `shop.*` host; other paths on the shop host redirect home). Vercel domain + Cloudflare CNAME wired.
+- A ghost catalog placeholder while products load, and an honesty footer on the shop: test-mode Visa, real-time on-chain budget authorization, real USDC settlement.
+
+### Changed
+
+- **The shop joined the design system**: the deliberately-generic system-ui skin is gone; the merchant now rides the remit tokens (pill buttons, inset inputs, panel surfaces, light + INK dark) while keeping its own name and tagline. All automation testids preserved.
+- **Catalog rebuilt, $5 ceiling**: six items from a $0.05 espresso to a $4.90 headphone stand (approved purchases settle real USDC, so the catalog stays cheap). The $49 always-over-budget item is gone; the decline beat now comes from issuing the demo card with a budget below the dearest item.
+- **README made judge-facing**: live-URL table up top, a demo-merchant section explaining the fiat lane end to end, and a per-track Cook Off compliance table.
+- The sidebar wordmark grew to 21px.
+
 ## [0.11.0] - 2026-06-12
 
 Round four of the live refinement: the Title Case voice, the one-caption hero, a real Visa on every card face (every delegation mints its own test-mode card), and the dashboard going properly mobile, with the iPhone loading stall fixed at its roots. Shipped through a 46-agent review pass plus a scoped delta review (8 fixes applied).

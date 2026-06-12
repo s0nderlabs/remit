@@ -1,10 +1,12 @@
 "use client";
 
-// /shop: standalone demo merchant ("s0nder supply co."). Deliberately NOT
-// remit-branded: it plays a generic online store in the demo video. An agent
-// fills the checkout form via browser automation (data-testids below), the
-// fiat lane authorizes behind the scenes. No Privy, no dashboard chrome -
-// plain fetch against the server's public /shop routes.
+// /shop: standalone demo merchant ("s0nder supply co."), a sibling storefront
+// on the remit design system (same tokens, light + INK dark) with an honest
+// foot note: test-mode Visa, real on-chain settlement. An agent fills the
+// checkout form via browser automation (data-testids below), the fiat lane
+// authorizes behind the scenes. No Privy, no dashboard chrome - plain fetch
+// against the server's public /shop routes. Also served at the shop.* host
+// (proxy.ts rewrites it here).
 
 import { useEffect, useState } from "react";
 import { shopApiBase } from "./api-base";
@@ -96,7 +98,17 @@ export default function ShopPage() {
         <div className={s.tag}>Everyday goods, shipped fast.</div>
 
         {loadErr && <p className={s.quiet}>Store is unavailable right now ({loadErr}). Refresh to retry.</p>}
-        {!loadErr && !catalog && <p className={s.quiet}>Loading…</p>}
+        {!loadErr && !catalog && (
+          <div className={s.grid} aria-hidden>
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className={s.skel}>
+                <i />
+                <i />
+                <i />
+              </div>
+            ))}
+          </div>
+        )}
 
         {catalog && (
           <div className={s.grid}>
@@ -212,6 +224,15 @@ export default function ShopPage() {
             )}
           </div>
         )}
+
+        <p className={s.foot}>
+          A demo storefront. It accepts Visa cards issued by{" "}
+          <a href="https://remit.s0nderlabs.xyz" target="_blank" rel="noreferrer">
+            remit
+          </a>{" "}
+          in Stripe test mode; every charge authorizes in real time against the card&apos;s on-chain budget, and
+          approved charges settle as real USDC transfers on Base.
+        </p>
       </div>
     </div>
   );
