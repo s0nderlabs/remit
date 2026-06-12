@@ -93,10 +93,10 @@ export default function ShopPage() {
     <div className={s.wrap}>
       <div className={s.inner}>
         <div className={s.brand}>{catalog?.merchant ?? "s0nder supply co."}</div>
-        <div className={s.tag}>everyday goods, shipped fast.</div>
+        <div className={s.tag}>Everyday goods, shipped fast.</div>
 
-        {loadErr && <p className={s.quiet}>store is unavailable right now ({loadErr}). refresh to retry.</p>}
-        {!loadErr && !catalog && <p className={s.quiet}>loading…</p>}
+        {loadErr && <p className={s.quiet}>Store is unavailable right now ({loadErr}). Refresh to retry.</p>}
+        {!loadErr && !catalog && <p className={s.quiet}>Loading…</p>}
 
         {catalog && (
           <div className={s.grid}>
@@ -109,7 +109,7 @@ export default function ShopPage() {
                   onClick={() => pick(p)}
                   data-testid={`buy-${p.id}`}
                 >
-                  buy
+                  Buy
                 </button>
               </div>
             ))}
@@ -119,14 +119,14 @@ export default function ShopPage() {
         {picked && (
           <div className={s.panel}>
             <div className={s.ptitle}>
-              checkout · {picked.name} · ${picked.price}
+              Checkout · {picked.name} · ${picked.price}
             </div>
 
             {result === null ? (
               <>
                 <div className={s.fields}>
                   <label className={s.field}>
-                    card number
+                    Card Number
                     <input
                       value={number}
                       onChange={(e) => setNumber(e.target.value)}
@@ -138,7 +138,7 @@ export default function ShopPage() {
                   </label>
                   <div className={s.exprow}>
                     <label className={s.field}>
-                      exp month
+                      Exp Month
                       <input
                         value={expMonth}
                         onChange={(e) => setExpMonth(e.target.value)}
@@ -149,7 +149,7 @@ export default function ShopPage() {
                       />
                     </label>
                     <label className={s.field}>
-                      exp year
+                      Exp Year
                       <input
                         value={expYear}
                         onChange={(e) => setExpYear(e.target.value)}
@@ -160,7 +160,7 @@ export default function ShopPage() {
                       />
                     </label>
                     <label className={s.field}>
-                      cvc
+                      CVC
                       <input
                         value={cvc}
                         onChange={(e) => setCvc(e.target.value)}
@@ -174,38 +174,38 @@ export default function ShopPage() {
                 </div>
                 <div className={s.payrow}>
                   <button className={s.pay} onClick={pay} disabled={!formReady || paying} data-testid="pay">
-                    {paying ? "paying…" : `pay $${picked.price}`}
+                    {paying ? "Paying…" : `Pay $${picked.price}`}
                   </button>
                 </div>
                 {payErr && (
                   <div className={`${s.result} ${s.declined}`} data-testid="result">
-                    something went wrong · {payErr}
+                    Something went wrong · {payErr}
                   </div>
                 )}
               </>
             ) : result.approved ? (
               <>
                 <div className={`${s.result} ${s.approved}`} data-testid="result">
-                  payment approved · {result.product?.name ?? picked.name}
+                  Payment approved · {result.product?.name ?? picked.name}
                   {result.last4 && <> · card ending {result.last4}</>}
                   {result.authorization_id && (
-                    <span className={s.authid}>authorization {result.authorization_id}</span>
+                    <span className={s.authid}>Authorization {result.authorization_id}</span>
                   )}
                 </div>
                 <div className={s.payrow}>
                   <button className={s.again} onClick={tryAgain} data-testid="try-again">
-                    buy something else
+                    Buy Something Else
                   </button>
                 </div>
               </>
             ) : (
               <>
                 <div className={`${s.result} ${s.declined}`} data-testid="result">
-                  payment declined · {result.reason}
+                  Payment declined · {result.reason}
                 </div>
                 <div className={s.payrow}>
                   <button className={s.again} onClick={tryAgain} data-testid="try-again">
-                    try again
+                    Try Again
                   </button>
                 </div>
               </>

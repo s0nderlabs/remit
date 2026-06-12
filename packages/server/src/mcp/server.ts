@@ -38,7 +38,7 @@ import type { AppDeps } from "../deps";
 import { spendDeps, spendKey } from "../deps";
 import { recentFiatDecision } from "../stripe/decisions";
 
-const SERVER_INFO = { name: "remit", version: "0.10.0" };
+const SERVER_INFO = { name: "remit", version: "0.11.0" };
 
 // Surfaced to clients at initialize. Claude Code's tool search (default-on since mid-2026)
 // keys discovery on this text and truncates at 2KB: keep it a compact routing guide.
@@ -291,8 +291,9 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
       },
       async (args: { amount: string; merchant?: string }) =>
         run(async () => {
-          const ic = await stripe.findCardForRemitCard(card.id);
-          if (!ic) throw new RefusalError("no_fiat_card", "no test-mode Visa card is linked to this card");
+          // every delegation IS a card: mint the linked test Visa on first need
+          const ic = await stripe.ensureCardForRemitCard(card.id);
+          if (!ic) throw new RefusalError("no_fiat_card", "no test-mode Visa could be linked to this card (no cardholder on the stripe account)");
           const merchantName = args.merchant ?? "remit demo merchant";
           // USD cents (schema caps at 2 decimals, so the atoms division is exact)
           const amountCents = Number(usdcToAtoms(args.amount) / 10_000n);
@@ -350,8 +351,9 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
       },
       async () =>
         run(async () => {
-          const ic = await stripe.findCardForRemitCard(card.id);
-          if (!ic) throw new RefusalError("no_fiat_card", "no test-mode Visa card is linked to this card");
+          // every delegation IS a card: mint the linked test Visa on first need
+          const ic = await stripe.ensureCardForRemitCard(card.id);
+          if (!ic) throw new RefusalError("no_fiat_card", "no test-mode Visa could be linked to this card (no cardholder on the stripe account)");
           const det = await stripe.getCardDetails(ic, { reveal: true });
           return {
             brand: det.brand,
@@ -463,6 +465,8 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
             name: args.name,
             terms: args.terms as CardTerms, // zod validated the shape; engine re-validates semantics
           });
+          // eager mint, fire-and-forget: the sub-card is a two-rail card from birth
+          if (deps.stripe) void deps.stripe.ensureCardForRemitCard(issued.cardId).catch(() => {});
           return { card_id: issued.cardId, card_url: cardUrl(issued.secret), terms: issued.terms };
         }),
     );

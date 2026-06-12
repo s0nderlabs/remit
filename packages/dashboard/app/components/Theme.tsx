@@ -24,6 +24,9 @@ export function ThemeToggle() {
     const next: Theme = theme === "dark" ? "light" : "dark";
     const apply = () => {
       document.documentElement.dataset.theme = next;
+      // the browser-chrome tint follows the chosen theme (the inline boot
+      // script created this meta; layout.tsx deliberately ships none)
+      document.querySelector('meta[name="theme-color"]')?.setAttribute("content", next === "dark" ? "#141417" : "#f7f7f8");
       try {
         localStorage.setItem("remit-theme", next);
       } catch {}
@@ -41,8 +44,8 @@ export function ThemeToggle() {
       className="themebtn"
       onClick={flip}
       disabled={theme === null}
-      aria-label={dark ? "switch to light mode" : "switch to dark mode"}
-      title={dark ? "light mode" : "dark mode"}
+      aria-label={dark ? "Switch to Light Mode" : "Switch to Dark Mode"}
+      title={dark ? "Light Mode" : "Dark Mode"}
       data-testid="theme-toggle"
     >
       <motion.svg

@@ -9,19 +9,23 @@
 // grayscale + a corner tag. No stamps.
 
 import { useRef, useState } from "react";
-import type { CardState } from "@/lib/api";
-import { ChipDots, Guilloche, IconSnowflake, isDead, panGroups, shortHex } from "./ui";
+import type { CardState, FiatCard } from "@/lib/api";
+import { capWord, ChipDots, Guilloche, IconSnowflake, isDead, panGroups, shortHex } from "./ui";
 
 export function CardHero({
   card,
   holder,
   agentAddress,
+  fiat,
+  fiatPending = false,
   flipped,
   onFlip,
 }: {
   card: CardState;
   holder?: string;
   agentAddress?: string;
+  fiat?: FiatCard | null; // the linked test-mode Visa · real PAN/exp on the face, cvc on the back
+  fiatPending?: boolean; // credential fetch in flight · hold placeholder dots, never flash the hex PAN
   flipped: boolean;
   onFlip: () => void;
 }) {
@@ -31,7 +35,17 @@ export function CardHero({
   const frozen = card.status === "frozen";
   const stateClass = dead ? "cardstate-dead" : frozen ? "cardstate-frozen" : "cardstate-active";
 
-  const pan = panGroups(agentAddress ?? card.card_id);
+  // a fiat-linked card wears its REAL credentials (test-mode Visa); a card whose
+  // credential fetch is still in flight holds quiet dots (no hex-then-Visa
+  // flash); only a settled UNLINKED card falls back to the hex pseudo-PAN
+  const visa = fiat?.linked && fiat.number ? fiat : null;
+  const pan = visa
+    ? (visa.number!.replace(/\s+/g, "").match(/.{1,4}/g) ?? [])
+    : fiatPending
+      ? ["••••", "••••", "••••", "••••"]
+      : panGroups(agentAddress ?? card.card_id);
+  const exp = visa ? `${String(visa.exp_month).padStart(2, "0")}/${String(visa.exp_year).slice(-2)}` : null;
+  const brand = visa ? capWord(visa.brand ?? "Visa") : null;
 
   const onMove = (e: React.MouseEvent) => {
     const el = flipRef.current;
@@ -64,7 +78,7 @@ export function CardHero({
           ref={flipRef}
           onClick={flip}
           data-testid="card-hero"
-          title={flipped ? "flip to front" : "flip the card"}
+          title={flipped ? "Flip to Front" : "Flip the Card"}
         >
           <div className="card face front">
             <div className="band">
@@ -76,18 +90,22 @@ export function CardHero({
                 {frozen && (
                   <span className="ctag frozen">
                     <IconSnowflake size={10} />
-                    frozen
+                    Frozen
                   </span>
                 )}
-                {dead && <span className="ctag dead">{card.status}</span>}
+                {dead && <span className="ctag dead">{capWord(card.status)}</span>}
               </div>
               <ChipDots />
               <div className="num">
                 {pan.map((g, i) => (
                   <span key={i}>{g}</span>
                 ))}
+                {brand && <span className="brandmark">{brand}</span>}
               </div>
-              <div className="holderline">{holder ?? card.name}</div>
+              <div className="holderline">
+                <span className="hname">{holder ?? card.name}</span>
+                {exp && <span className="hexp">{exp}</span>}
+              </div>
             </div>
             <div className="frost" />
           </div>
@@ -95,19 +113,29 @@ export function CardHero({
           <div className="card face back">
             <div className="bstrip" />
             <div className="backin">
-              <span className="siglabel">authorized delegate</span>
+              <span className="siglabel">Authorized Delegate</span>
               <div className="sigstrip">
                 <span className="signame">{holder ?? card.name}</span>
+                {visa?.cvc && (
+                  <span className="sigcvc num" title="CVC">
+                    {visa.cvc}
+                  </span>
+                )}
               </div>
               <span className="bfacts data">
-                base · mainnet{agentAddress ? ` · ${shortHex(agentAddress)}` : ""}
+                Base · mainnet{agentAddress ? ` · ${shortHex(agentAddress)}` : ""}
+                {brand ? ` · ${brand} test mode` : ""}
               </span>
               <p className="backhint">
-                {dead ? "this card's authority is gone." : "no secrets on this card · connecting an agent reveals the credential."}
+                {dead
+                  ? "This card's authority is gone."
+                  : visa
+                    ? "The Visa is real (test mode) · every charge it makes still answers to this card's on-chain budget."
+                    : "No secrets on this card · connecting an agent reveals the credential."}
               </p>
               <div className="bfoot">
                 <span className="bwm">remit</span>
-                <span className="bnote">authority, lent not given.</span>
+                <span className="bnote">Authority, lent not given.</span>
               </div>
             </div>
             <div className="bband">

@@ -2,19 +2,18 @@
 
 // The dossier, centered-hero edition (the Apple Card grammar). One vertical
 // axis: name + status on top → the card deck (a stack: the active card front
-// and center, the next card peeking out behind its right edge · just enough
-// to say "there's more" · with the ghost "issue" card riding the tail) → the
-// balance, big and centered → the gauge → one quiet inline stats line → the
-// static verb row.
+// and center, the next card peeking out behind its right edge · the + at the
+// deck's edge issues) → the balance, big and centered → the gauge → one
+// whisper caption → the static verb row.
 // Below, the full-width paned zone: activity / delegation terms / sub-cards
 // behind a quiet segmented toggle. Card swaps animate ONLY the per-card
-// readings (name, money, stats line, open pane) with a short in-place fade;
+// readings (name, money, caption, open pane) with a short in-place fade;
 // the verbs, tabs and carousel chrome never move.
 // All v1 state machines (connect / freeze / revoke) are preserved verbatim.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, type Variants } from "motion/react";
-import { api, type CardState, type TreeNode } from "@/lib/api";
+import { api, type CardState, type FiatCard, type TreeNode } from "@/lib/api";
 import type { useRemit } from "../useRemit";
 import { CardHero } from "./CardHero";
 import { ConnectOverlay } from "./ConnectOverlay";
@@ -36,23 +35,20 @@ import {
 type Remit = ReturnType<typeof useRemit>;
 type Tab = "activity" | "terms" | "subs";
 
-// the swap choreography, kept quiet: a short drift toward the swipe (custom =
-// ±1) or a small rise for tab switches (custom = 0), plain easing, no blur,
-// no overshoot. mode="wait" keeps everything in normal flow: the old content
-// fades exactly where it stands, then the new settles in.
+// the swap choreography, kept quiet: old and new content occupy the same
+// grid cell and CROSS-FADE · no mode="wait", so there is never a blank frame
+// between them. ONE move for every swap (card swipe and tab switch alike):
+// a small rise + fade in place. The deck's own slide already says which way
+// the cards went; the readings don't chase it sideways.
 const swapEase = [0.22, 1, 0.36, 1] as const;
 const zoneVariants: Variants = {
-  enter: (d: number) => (d === 0 ? { opacity: 0, y: 8 } : { opacity: 0, x: 16 * d }),
+  enter: { opacity: 0, y: 8 },
   center: {
     opacity: 1,
-    x: 0,
     y: 0,
-    transition: { duration: 0.26, ease: swapEase, staggerChildren: 0.03 },
+    transition: { duration: 0.3, ease: swapEase, staggerChildren: 0.03 },
   },
-  exit: (d: number) =>
-    d === 0
-      ? { opacity: 0, y: -5, transition: { duration: 0.1, ease: "easeIn" } }
-      : { opacity: 0, x: -10 * d, transition: { duration: 0.1, ease: "easeIn" } },
+  exit: { opacity: 0, y: -5, transition: { duration: 0.18, ease: "easeOut" } },
 };
 
 const rowVariants: Variants = {
@@ -89,21 +85,26 @@ export function Dossier({
   const dead = card ? isDead(card.status) : false;
   const heroId = card?.card_id ?? "";
 
-  // swipe direction drives the swap choreography: which way the content drifts
-  const idx = Math.max(0, roots.findIndex((n) => n.card.card_id === heroId));
-  const prevIdxRef = useRef(idx);
-  const dir = idx >= prevIdxRef.current ? 1 : -1;
-  useEffect(() => {
-    prevIdxRef.current = idx;
-  }, [idx]);
-
   // the bottom pane toggle survives card swaps (compare terms across cards)
   const [tab, setTab] = useState<Tab>("activity");
-  // a pane swap caused by the TAB rises in place; caused by the CARD it drifts
-  const prevHeroRef = useRef(heroId);
-  const paneDir = heroId !== prevHeroRef.current ? dir : 0;
+
+  // the linked test-mode Visa per card (owner view) · fetched once per card,
+  // cached for the session so swapping back never flickers the PAN
+  const [fiatMap, setFiatMap] = useState<Map<string, FiatCard>>(new Map());
   useEffect(() => {
-    prevHeroRef.current = heroId;
+    if (!heroId || fiatMap.has(heroId)) return;
+    let live = true;
+    api
+      .fiatCard(heroId)
+      .then((f) => {
+        if (live) setFiatMap((m) => new Map(m).set(heroId, f));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+    // fiatMap intentionally not a dep: the has() guard already de-dupes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [heroId]);
 
   // Connect state lives here so the verb can open the credential overlay ·
@@ -147,19 +148,12 @@ export function Dossier({
       }
     : undefined;
 
-  // the pane toggle row (counts ride as quiet subs)
-  const { count } = feedStats(feed);
+  // the pane toggle row · labels only: the panes carry their own numbers
   const kids = node?.children ?? [];
-  const liveKids = kids.filter((c) => !isDead(c.card.status)).length;
-  const tabs: { key: Tab; label: string; sub: string; disabled?: boolean }[] = [
-    { key: "activity", label: "activity", sub: count > 0 ? `· ${count}` : "" },
-    { key: "terms", label: "delegation terms", sub: card ? `· ${caveatCount(card)}` : "", disabled: !card },
-    {
-      key: "subs",
-      label: "sub-cards",
-      sub: kids.length > 0 ? `· ${liveKids} live` : "",
-      disabled: !card,
-    },
+  const tabs: { key: Tab; label: string; disabled?: boolean }[] = [
+    { key: "activity", label: "Activity" },
+    { key: "terms", label: "Delegation Terms", disabled: !card },
+    { key: "subs", label: "Sub-Cards", disabled: !card },
   ];
 
   return (
@@ -167,11 +161,10 @@ export function Dossier({
       <section className="hero">
         {card && (
           <div className="heroid-wrap">
-            <AnimatePresence mode="wait" custom={dir} initial={false}>
+            <AnimatePresence initial={false}>
               <motion.div
                 key={card.card_id}
                 className="heroid"
-                custom={dir}
                 variants={zoneVariants}
                 initial="enter"
                 animate="center"
@@ -189,15 +182,18 @@ export function Dossier({
           currentId={currentId ?? heroId}
           kmap={kmap}
           kAgent={kAgent}
+          fiatMap={fiatMap}
           onSelect={onSelect}
           onIssue={onIssue}
         />
 
         {card ? (
           <>
-            <AnimatePresence mode="wait" custom={dir} initial={false}>
-              <HeadBody key={card.card_id} dir={dir} card={card} node={node!} feed={feed} />
-            </AnimatePresence>
+            <div className="dbody-wrap">
+              <AnimatePresence initial={false}>
+                <HeadBody key={card.card_id} card={card} />
+              </AnimatePresence>
+            </div>
 
             <Verbs
               card={card}
@@ -210,14 +206,14 @@ export function Dossier({
           </>
         ) : (
           <div className="heroempty">
-            <h1>no cards yet</h1>
-            <p>issue your first card and hand it to an agent · scoped, revocable, dead on revoke</p>
+            <h1>No Cards Yet</h1>
+            <p>Issue your first card and hand it to an agent · scoped, revocable, dead on revoke</p>
           </div>
         )}
       </section>
 
       <div className="bottom">
-        <div className="tabrow" role="tablist" aria-label="card details">
+        <div className="tabrow" role="tablist" aria-label="Card details">
           {tabs.map((t) => (
             <button
               key={t.key}
@@ -236,16 +232,14 @@ export function Dossier({
                 />
               )}
               <span className="t">{t.label}</span>
-              {t.sub && <span className="n num">{t.sub}</span>}
             </button>
           ))}
         </div>
         <div className="tabbody">
-          <AnimatePresence mode="wait" custom={paneDir} initial={false}>
+          <AnimatePresence initial={false}>
             <motion.div
               key={`${heroId || "empty"}:${tab}`}
               className="pane"
-              custom={paneDir}
               variants={zoneVariants}
               initial="enter"
               animate="center"
@@ -280,7 +274,8 @@ export function Dossier({
 // NEXT card peeks out behind its right edge · one uniform sliver, just enough
 // to say "there's more". Passed cards tuck away invisibly to the left.
 // Navigate by dragging the active card, swiping the trackpad, clicking the
-// peek, or the dots; the + button beside the dots issues a new card.
+// peek, or the dots; the + floating at the deck's right edge ("another card
+// could live here") issues a new card.
 // ---------------------------------------------------------------------------
 
 // the pose for a slide at distance d from the active card
@@ -296,6 +291,7 @@ function Carousel({
   currentId,
   kmap,
   kAgent,
+  fiatMap,
   onSelect,
   onIssue,
 }: {
@@ -303,6 +299,7 @@ function Carousel({
   currentId?: string | null;
   kmap: Map<string, string>;
   kAgent?: string;
+  fiatMap?: Map<string, FiatCard>;
   onSelect?: (cardId: string) => void;
   onIssue?: () => void;
 }) {
@@ -345,7 +342,7 @@ function Carousel({
   }, [canWheel, hasStack]);
 
   if (roots.length === 0) {
-    return <div className="bayempty">the bay is empty · your first card appears here</div>;
+    return <div className="bayempty">The bay is empty · your first card appears here</div>;
   }
 
   return (
@@ -401,50 +398,50 @@ function Carousel({
                 card={n.card}
                 holder={n.card.name}
                 agentAddress={kmap.get(n.card.card_id) ?? (active ? kAgent : undefined)}
+                fiat={fiatMap?.get(n.card.card_id)}
+                fiatPending={active && !isDead(n.card.status) && !fiatMap?.has(n.card.card_id)}
                 flipped={active && flipped}
                 onFlip={() => active && setFlipped((f) => !f)}
               />
             </motion.div>
           );
         })}
+        {onIssue && (
+          <button
+            className="deckplus"
+            onClick={onIssue}
+            data-testid="issue-open"
+            aria-haspopup="dialog"
+            aria-label="Issue a new card"
+            title="Issue a new card"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden>
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        )}
       </div>
-      {(roots.length > 1 || onIssue) && (
+      {roots.length > 1 && (
         <div className="cdots">
-          {roots.length > 1 &&
-            roots.map((n, i) => (
-              <button
-                key={n.card.card_id}
-                className={`cdot${i === idx ? " on" : ""}`}
-                onClick={() => goTo(i)}
-                aria-label={`show ${n.card.name}`}
-              />
-            ))}
-          {onIssue && (
+          {roots.map((n, i) => (
             <button
-              className="cplus"
-              onClick={onIssue}
-              data-testid="issue-open"
-              aria-haspopup="dialog"
-              aria-label="issue a new card"
-              title="issue a new card"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden>
-                <path d="M12 5v14M5 12h14" />
-              </svg>
-            </button>
-          )}
+              key={n.card.card_id}
+              className={`cdot${i === idx ? " on" : ""}`}
+              onClick={() => goTo(i)}
+              aria-label={`Show ${n.card.name}`}
+            />
+          ))}
         </div>
       )}
-      <div className="agg num">{bayAggregate(roots)}</div>
     </div>
   );
 }
 
-/** "2 live · $30.00 / wk delegated" · the quiet aggregate under the dots */
-function bayAggregate(roots: TreeNode[]): string {
+/** "2 live cards · $30.00 / wk delegated" · the wallet aggregate (profile menu) */
+export function bayAggregate(roots: TreeNode[]): string {
   const live = roots.filter((n) => !isDead(n.card.status));
-  if (live.length === 0) return "no live cards";
-  const cards = `${live.length} live`;
+  if (live.length === 0) return "No live cards";
+  const cards = `${live.length} live card${live.length === 1 ? "" : "s"}`;
   let sum = 0;
   const periods = new Set<string>();
   for (const n of live) {
@@ -511,7 +508,7 @@ function Verbs({
         try {
           await onConnect();
         } catch (e) {
-          setMsg(`reveal url failed: ${e instanceof Error ? e.message : e}`);
+          setMsg(`Reveal URL failed: ${e instanceof Error ? e.message : e}`);
         } finally {
           setRevealing(false);
         }
@@ -525,11 +522,11 @@ function Verbs({
           <>
             <button className="vpill primary" disabled>
               <IconConnect />
-              connect agent
+              Connect Agent
             </button>
             <button className="vpill" disabled>
               <IconSnowflake size={13} />
-              freeze
+              Freeze
             </button>
           </>
         ) : (
@@ -537,31 +534,31 @@ function Verbs({
             {reveal && (
               <button className="vpill primary" disabled={revealing} onClick={reveal} data-testid="reveal-url">
                 <IconConnect />
-                connect agent
+                Connect Agent
               </button>
             )}
             {card.status === "active" && (
               <button
                 className="vpill"
                 disabled={busy}
-                onClick={act(() => api.freeze(card.card_id), "freeze")}
+                onClick={act(() => api.freeze(card.card_id), "Freeze")}
                 data-testid="freeze"
-                title="freeze this card"
+                title="Freeze this card"
               >
                 <IconSnowflake size={13} />
-                freeze
+                Freeze
               </button>
             )}
             {frozen && (
               <button
                 className="vpill iced"
                 disabled={busy}
-                onClick={act(() => api.unfreeze(card.card_id), "unfreeze")}
+                onClick={act(() => api.unfreeze(card.card_id), "Unfreeze")}
                 data-testid="unfreeze"
-                title="unfreeze this card"
+                title="Unfreeze this card"
               >
                 <IconSnowflake size={13} />
-                unfreeze
+                Unfreeze
               </button>
             )}
           </>
@@ -593,76 +590,41 @@ function IconConnect() {
 }
 
 // ---------------------------------------------------------------------------
-// the per-card readings: the balance (big, centered), the gauge, and one
-// quiet inline stats line · remounted per card for the odometer
+// the per-card readings: the balance (big, centered), the gauge, and ONE
+// whisper caption · the old label, % pill and 3-fact stats band all
+// collapsed into it. Remounted per card for the odometer.
 // ---------------------------------------------------------------------------
 
-function HeadBody({
-  dir,
-  card,
-  node,
-  feed,
-}: {
-  dir: number;
-  card: CardState;
-  node: TreeNode;
-  feed: FeedRow[];
-}) {
+function HeadBody({ card }: { card: CardState }) {
   const dead = isDead(card.status);
   const frozen = card.status === "frozen";
-  const { cap, remaining, spent, spentPct } = allowance(card);
+  const { cap, remaining, spentPct } = allowance(card);
   const ct = card.terms.contract;
   const metered = cap !== null; // a pay budget governs this card
   const ptLive = ct ? perTradeEnforces(ct) : false;
-
-  // label above the figure: what IS this number
-  const plabel = card.terms.pay?.period ? periodLabel(card.terms.pay.period.seconds) : null;
-  const label = metered
-    ? plabel === "day"
-      ? "remaining today"
-      : plabel === "wk"
-        ? "remaining this week"
-        : plabel === "mo"
-          ? "remaining this month"
-          : "remaining · lifetime"
-    : ct
-      ? ptLive
-        ? "per-trade ceiling"
-        : "execute scope"
-      : "remaining";
 
   // the headline figure: a dead card shows its cap, ghosted (the epitaph state)
   const figTarget = dead ? (cap ?? 0) : metered ? (remaining ?? 0) : ptLive ? parseFloat(ct?.perTradeMax ?? "0") : (remaining ?? 0);
   const animated = useCountUp(figTarget);
   const [whole, cents] = splitAmount(animated);
 
-  const ofcap = metered ? (
-    <>
-      of ${cap.toLocaleString("en-US", { minimumFractionDigits: 2 })}
-      {card.terms.pay?.period ? ` / ${periodLabel(card.terms.pay.period.seconds)}` : " lifetime"}
-      {ct && <> · + execute · {ct.targets.length} contract{ct.targets.length === 1 ? "" : "s"}</>}
-    </>
-  ) : ct && ptLive ? (
-    <>
-      per trade · {ct.targets.length} contract{ct.targets.length === 1 ? "" : "s"} / {ct.selectors.length} method
-      {ct.selectors.length === 1 ? "" : "s"}
-    </>
-  ) : ct ? (
-    <>
-      contract{ct.targets.length === 1 ? "" : "s"} in scope · {ct.selectors.length} method{ct.selectors.length === 1 ? "" : "s"}
-    </>
-  ) : (
-    <>unmetered</>
-  );
+  // what the figure means · the caption's first clause
+  const plabel = card.terms.pay?.period ? periodLabel(card.terms.pay.period.seconds) : null;
+  const span = plabel === "day" ? "today" : plabel === "wk" ? "this week" : plabel === "mo" ? "this month" : "lifetime";
+  const scope = metered
+    ? `of $${cap.toLocaleString("en-US", { minimumFractionDigits: 2 })} ${span}${
+        ct ? ` · + execute · ${ct.targets.length} contract${ct.targets.length === 1 ? "" : "s"}` : ""
+      }`
+    : ct && ptLive
+      ? `per trade · ${ct.targets.length} contract${ct.targets.length === 1 ? "" : "s"} / ${ct.selectors.length} method${ct.selectors.length === 1 ? "" : "s"}`
+      : ct
+        ? `contract${ct.targets.length === 1 ? "" : "s"} in scope · ${ct.selectors.length} method${ct.selectors.length === 1 ? "" : "s"}`
+        : "unmetered";
 
-  // the gauge is a fuel gauge: full when untouched, draining toward empty
-  const leftPct = Math.max(0, 100 - spentPct);
-  const pctLabel = dead ? "" : leftPct >= 100 ? "100%" : `${(Math.round(leftPct * 10) / 10).toFixed(1)}%`;
-
-  // the line riding the gauge's end: countdown for the living, epitaph for the dead
-  const resets = dead
+  // when it changes · countdown for the living, epitaph for the dead
+  const when = dead
     ? card.status === "expired" && card.expires_at
-      ? `expired ${new Date(card.expires_at * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase()}`
+      ? `expired ${new Date(card.expires_at * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
       : `${card.status} · authority dead on-chain`
     : frozen
       ? "frozen · spends refuse until unfrozen"
@@ -672,24 +634,12 @@ function HeadBody({
           ? `expires in ${fmtCountdown(card.expires_at)}`
           : "no expiry";
 
-  // the inline stats line (the old 3-up KPI band, compressed to a whisper)
-  const { today, total30, count, okCount } = feedStats(feed);
-  const blocked = count - okCount;
-  const liveSubs = node.children.filter((c) => !isDead(c.card.status)).length;
-  const spentShown = dead ? 0 : (spent ?? total30);
-  const statSpent = `${fmtUsd(spentShown)} spent ${spent !== null ? "this period" : "in 30 days"}${dead ? "" : today > 0 ? ` (+${fmtUsd(today)} today)` : ""}`;
-  const statCharges =
-    count === 0 ? (dead ? "no charges recorded" : "no charges yet") : `${count} charge${count === 1 ? "" : "s"}${blocked > 0 ? `, ${blocked} blocked` : ", all settled"}`;
-  const statSubs = dead
-    ? "tree is empty"
-    : card.terms.subcards === false
-      ? "sub-cards not permitted"
-      : `${liveSubs} sub-card${liveSubs === 1 ? "" : "s"} live`;
+  // the gauge is a fuel gauge: full when untouched, draining toward empty
+  const leftPct = Math.max(0, 100 - spentPct);
 
   return (
-    <motion.div className="dbody" custom={dir} variants={zoneVariants} initial="enter" animate="center" exit="exit">
+    <motion.div className="dbody" variants={zoneVariants} initial="enter" animate="center" exit="exit">
       <motion.div className="money num" variants={rowVariants}>
-        <span className="lbl">{label}</span>
         <div className="fig">
           {metered || ptLive || !ct ? (
             <span data-testid="remaining">
@@ -702,30 +652,22 @@ function HeadBody({
               <span className="int">{ct.targets.length}</span>
             </span>
           )}
-          <span className="ofcap">{ofcap}</span>
         </div>
         <div className="gaugerow">
-          {metered ? (
-            <div className="gauge">
-              <div className="fill" style={{ width: dead ? "0%" : `${leftPct}%` }}>
-                {pctLabel && <span className="pct num">{pctLabel}</span>}
-              </div>
-            </div>
-          ) : (
-            <div className="gauge">
-              <div className="fill" style={{ width: dead ? "0%" : "100%", background: "var(--hairline)" }} />
-            </div>
-          )}
-          <div className="resets">{resets}</div>
+          <div className="gauge">
+            <div
+              className="fill"
+              style={
+                metered
+                  ? { width: dead ? "0%" : `${leftPct}%` }
+                  : { width: dead ? "0%" : "100%", background: "var(--hairline)" }
+              }
+            />
+          </div>
         </div>
-      </motion.div>
-
-      <motion.div className="statline num" variants={rowVariants}>
-        <span>{statSpent}</span>
-        <i />
-        <span>{statCharges}</span>
-        <i />
-        <span>{statSubs}</span>
+        <div className="caption">
+          {scope} · {when}
+        </div>
       </motion.div>
     </motion.div>
   );
@@ -739,18 +681,18 @@ function ActivityPane({ card, feed }: { card: CardState | null; feed: FeedRow[] 
   const { bins, binLabels, dayLabels } = feedStats(feed);
   const dead = card ? isDead(card.status) : false;
   const empty = !card
-    ? "no activity yet · issue a card to begin"
+    ? "No activity yet · issue a card to begin"
     : dead
-      ? `no activity · authority ${card.status}`
-      : "no charges yet · connect an agent and let it spend";
+      ? `No activity · authority ${card.status}`
+      : "No charges yet · connect an agent and let it spend";
 
   return (
     <>
       <motion.div className="dr chartblock" variants={rowVariants}>
         <div className="chead">
           <div>
-            <h2>daily spend</h2>
-            <span className="sub">last 30 days</span>
+            <h2>Daily Spend</h2>
+            <span className="sub">Last 30 days</span>
           </div>
           <span className="range num">
             {dayLabels[0]} – {dayLabels[29]}
@@ -778,7 +720,7 @@ function TermsPane({ card, kAgent }: { card: CardState; kAgent?: string }) {
     <motion.div className="dr panein" variants={rowVariants}>
       <p className="panenote">
         {dead
-          ? "enforcement ended · the delegation is dead on-chain"
+          ? "Enforcement ended · the delegation is dead on-chain"
           : `${caveatCount(card)} caveats enforced on-chain · nothing here is a promise, it's the authority itself`}
       </p>
       <TermsGrid card={card} agentAddress={kAgent} />
@@ -798,10 +740,10 @@ function SubsPane({ card, node, kmap }: { card: CardState; node: TreeNode; kmap:
       ) : (
         <div className="subnote">
           {!allowed
-            ? "terms on this card don't permit sub-cards"
+            ? "Terms on this card don't permit sub-cards"
             : dead
-              ? "none carved before revoke · the tree is empty"
-              : "none yet · the agent holding this card carves them itself: connect it, then ask it to issue a sub-card (the issue_subcard tool) · caps only narrow downward, and they appear here"}
+              ? "None carved before revoke · the tree is empty"
+              : "None yet · the agent holding this card carves them itself: connect it, then ask it to issue a sub-card (the issue_subcard tool) · caps only narrow downward, and they appear here"}
         </div>
       )}
     </motion.div>

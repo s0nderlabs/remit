@@ -49,7 +49,7 @@ export function ConnectOverlay({
         className="overlay"
         role="dialog"
         aria-modal="true"
-        aria-label="connect an agent"
+        aria-label="Connect an Agent"
         initial={{ opacity: 0, y: 22, scale: 0.97 }}
         animate={{ opacity: 1, y: 0, scale: 1, transition: { type: "spring", stiffness: 380, damping: 30 } }}
         exit={{ opacity: 0, y: 12, scale: 0.98, transition: { duration: 0.16 } }}
@@ -57,10 +57,10 @@ export function ConnectOverlay({
       >
         <div className="ovhead">
           <div>
-            <span className="lbl">connect an agent</span>
+            <span className="lbl">Connect an Agent</span>
             <h2 className="ovtitle">{card.name}</h2>
           </div>
-          <button className="closex" onClick={onClose} aria-label="close">
+          <button className="closex" onClick={onClose} aria-label="Close">
             ✕
           </button>
         </div>
@@ -68,11 +68,11 @@ export function ConnectOverlay({
         <ConnectChips url={url} cardName={card.name} />
         <div className="ovfoot">
           <p className="ovnote">
-            the url is the credential · anyone holding it can spend within this card's terms · rotate it if it leaks
+            The URL is the credential · anyone holding it can spend within this card's terms · rotate it if it leaks
           </p>
           {onRotate && (
-            <button className="ovrotate" onClick={onRotate} disabled={rotating} data-testid="rotate-url" title="invalidate this URL and mint a new one">
-              {rotating ? "rotating…" : "rotate url"}
+            <button className="ovrotate" onClick={onRotate} disabled={rotating} data-testid="rotate-url" title="Invalidate this URL and mint a new one">
+              {rotating ? "Rotating…" : "Rotate URL"}
             </button>
           )}
         </div>

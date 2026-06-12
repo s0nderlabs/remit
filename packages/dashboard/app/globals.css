@@ -7,11 +7,13 @@
    sheets. Light and dark themes share one achromatic token set; saturation
    lives ONLY in the card band, status dots, the gauge fill and focus rings.
    The card object carries a pinned palette per theme (porcelain light,
-   graphite dark). Primary verbs are ink pills. No uppercase anywhere. Type: Funnel
-   Display 500/600 (headlines + display numerals, tabular), Sora 400/500/600
-   for everything else. Radius ramp 24/20/16/13/10/999. Motion is owned by
-   motion/react (swap staggers, modals, theme morph); CSS keeps only the
-   ambient loops (pulse, spin, shine). */
+   graphite dark). Primary verbs are ink pills. Case voice: Title Case for
+   controls/labels, sentence case for prose · never all-caps, never
+   all-lowercase. Type: Funnel Display 500/600 (headlines + display numerals,
+   tabular), Sora 400/500/600 for everything else. Radius ramp
+   24/20/16/13/10/999. Motion is owned by motion/react (swap cross-fades,
+   modals, theme morph); CSS keeps only quiet one-shot moves (ring draw,
+   shine) and spinners · no looping pulses. */
 
 :root {
   color-scheme: light;
@@ -109,8 +111,12 @@
 /* scrolling stays, scrollbars don't: every scroll container is a clean surface */
 * { scrollbar-width: none; }
 *::-webkit-scrollbar { display: none; }
-/* overscroll-x: none · deck swipes must never rubber-band the page */
-html { background: var(--page); scroll-behavior: smooth; overscroll-behavior-x: none; }
+/* overscroll-x: none · deck swipes must never rubber-band the page.
+   text-size-adjust 100% · iOS must not inflate type in landscape */
+html {
+  background: var(--page); scroll-behavior: smooth; overscroll-behavior-x: none;
+  -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+}
 body {
   font-family: var(--font-sans), -apple-system, system-ui, sans-serif;
   font-size: 13px;
@@ -136,13 +142,10 @@ h2 { font-size: 14.5px; }
 /* the mono voice was cut · hex rides Sora, tabular where it counts */
 .data { font-family: var(--font-sans), sans-serif; font-variant-numeric: tabular-nums lining-nums; }
 .num { font-variant-numeric: tabular-nums lining-nums; }
-/* the quiet label: sentence case, never uppercase */
+/* the quiet label: Title Case text, never an uppercase transform */
 .lbl { font-size: 12px; font-weight: 500; color: var(--label); }
-/* legacy caps (connect/consent pages only · the dashboard never uses it) */
-.caps {
-  font-size: 10px; font-weight: 500; letter-spacing: 0.14em;
-  text-transform: uppercase; color: var(--label);
-}
+/* legacy label class (connect/consent pages) · de-capsed: same quiet voice */
+.caps { font-size: 11px; font-weight: 500; letter-spacing: 0.01em; color: var(--label); }
 
 /* ---------- buttons / inputs ---------- */
 button {
@@ -184,27 +187,27 @@ button:focus-visible, a:focus-visible {
   letter-spacing: 0.02em; padding: 4px 11px; border-radius: 99px;
 }
 .pill.live { color: var(--accent); background: var(--accent-tint); }
-.pill.live b { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: pulse 2.4s var(--ease) infinite; }
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 91, 255, 0.35); }
-  50% { box-shadow: 0 0 0 5px rgba(99, 91, 255, 0); }
-}
-/* the lowercase statusword: a quiet inset pill beside the card name */
+.pill.live b { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+/* the statusword: a quiet inset pill beside the card name. The glyph carries
+   the state (seal / snowflake / hollow ring) · nothing loops */
 .statusword {
   display: inline-flex; align-items: center; gap: 6px;
-  font-size: 12px; font-weight: 500; color: var(--body); text-transform: lowercase;
+  font-size: 12px; font-weight: 500; color: var(--body);
   background: var(--inset); border-radius: 999px; padding: 4px 11px;
 }
-.statusword b { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
-.statusword.live b { animation: pulse 2.4s var(--ease) infinite; }
+.statusword svg { flex: none; display: block; }
+.statusword.live svg { color: var(--accent); }
+/* the seal's outer ring draws itself once on mount · alive, not alarming */
+.statusword .sealring { stroke-dasharray: 1; stroke-dashoffset: 1; animation: sealdraw 0.7s var(--ease) 0.15s forwards; }
+@keyframes sealdraw { to { stroke-dashoffset: 0; } }
 .statusword.frozen { color: var(--frozen-ink); }
-.statusword.frozen b { background: #9aa0a8; }
+.statusword.frozen svg { color: #9aa0a8; }
 .statusword.dead { color: var(--ghost); }
-.statusword.dead b { background: var(--ghost); }
+.statusword.dead svg { color: var(--ghost); }
 /* legacy chips (connect page) */
 .chip {
-  display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 500;
-  letter-spacing: 0.08em; text-transform: uppercase; padding: 3px 9px; border-radius: 99px;
+  display: inline-flex; align-items: center; font-size: 11px; font-weight: 500;
+  letter-spacing: 0.02em; padding: 3px 9px; border-radius: 99px;
 }
 .chip.active { color: var(--accent); background: var(--accent-tint); }
 .chip.frozen { color: var(--frozen-ink); background: var(--frozen-tint); }
@@ -267,7 +270,7 @@ button:focus-visible, a:focus-visible {
 /* the corner state tag: the quiet replacement for the old stamps */
 .ctag {
   display: inline-flex; align-items: center; gap: 5px;
-  font-size: 10px; font-weight: 500; letter-spacing: 0.02em; text-transform: lowercase;
+  font-size: 10px; font-weight: 500; letter-spacing: 0.02em;
   color: var(--frozen-ink); background: rgba(255, 255, 255, 0.72);
   border: 1px solid var(--hairline); border-radius: 999px; padding: 3px 9px;
 }
@@ -279,22 +282,39 @@ button:focus-visible, a:focus-visible {
 .card .num {
   margin-top: auto; font-family: var(--font-sans), sans-serif;
   font-size: 14.5px; letter-spacing: 0.08em; color: var(--ink); display: flex; gap: 14px;
-  text-transform: lowercase; font-variant-numeric: tabular-nums lining-nums;
+  font-variant-numeric: tabular-nums lining-nums; align-items: baseline;
 }
-.holderline { margin: 10px 0 2px; font-size: 10.5px; letter-spacing: 0.04em; color: var(--label); text-transform: lowercase; }
+/* the network brand on a fiat-linked card · quiet display voice, riding the PAN row's end */
+.card .num .brandmark {
+  margin-left: auto; font-family: var(--font-display), sans-serif; font-weight: 600;
+  font-size: 13px; letter-spacing: 0; color: var(--ink); opacity: 0.85;
+}
+.holderline {
+  margin: 10px 0 2px; font-size: 10.5px; letter-spacing: 0.04em; color: var(--label);
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+}
+.holderline .hname { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.holderline .hexp { flex: none; font-variant-numeric: tabular-nums lining-nums; }
 /* the back face, one voice per line */
 .bstrip { margin-top: 20px; height: 32px; flex: none; background: linear-gradient(90deg, #16171b, #2e3036); }
 .backin { position: relative; z-index: 2; flex: 1; display: flex; flex-direction: column; padding: 12px 24px 14px; min-height: 0; }
-.siglabel { font-size: 9px; font-weight: 500; letter-spacing: 0.04em; color: var(--ghost); margin-bottom: 5px; text-transform: lowercase; }
+.siglabel { font-size: 9px; font-weight: 500; letter-spacing: 0.04em; color: var(--ghost); margin-bottom: 5px; }
 .sigstrip {
   background: rgba(255, 255, 255, 0.82); border: 1px solid var(--hairline);
   border-radius: 8px; padding: 6px 12px;
+  display: flex; align-items: center; gap: 10px;
+}
+.sigstrip .signame { flex: 1; min-width: 0; }
+/* the cvc, printed beside the signature like a real card */
+.sigcvc {
+  flex: none; font-size: 12px; color: var(--ink);
+  padding-left: 10px; border-left: 1px solid var(--hairline);
 }
 .signame {
-  display: block; font-size: 12.5px; font-weight: 500; color: var(--ink); text-transform: lowercase;
+  display: block; font-size: 12.5px; font-weight: 500; color: var(--ink);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.bfacts { margin-top: 9px; font-size: 10px; letter-spacing: 0.04em; color: var(--body); text-transform: lowercase; }
+.bfacts { margin-top: 9px; font-size: 10px; letter-spacing: 0.04em; color: var(--body); }
 .backhint { font-size: 10px; line-height: 1.6; color: var(--label); max-width: 300px; margin-top: 6px; }
 .bfoot { margin-top: auto; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .bwm { font-family: var(--font-display), sans-serif; font-weight: 600; font-size: 13px; color: var(--ink); }
@@ -341,9 +361,10 @@ button:focus-visible, a:focus-visible {
 .railback:hover { color: var(--ink); border-color: var(--hairline-strong); }
 .railback svg { width: 14px; height: 14px; }
 .railfoot { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 16px; }
-.net { display: flex; flex-direction: column; align-items: center; gap: 5px; white-space: nowrap; }
-.net b { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 2.4s var(--ease) infinite; }
-.net i { font-style: normal; font-size: 9.5px; font-weight: 500; color: var(--label); }
+/* the network mark: the Base roundel in chrome gray, at rest */
+.net { display: grid; place-items: center; color: var(--label); transition: color 0.2s var(--ease); cursor: default; }
+.net:hover { color: var(--body); }
+.net svg { width: 15px; height: 15px; display: block; }
 button.themebtn {
   width: 34px; height: 34px; border-radius: 50%; padding: 0;
   display: grid; place-items: center;
@@ -367,7 +388,10 @@ button.avatarbtn:hover .avatar { box-shadow: 0 0 0 3px var(--accent-tint); }
 }
 .prowho { display: flex; align-items: center; gap: 9px; padding: 8px 10px 10px; border-bottom: 1px solid var(--hairline); margin-bottom: 6px; }
 .prowho .avatar { width: 24px; height: 24px; }
+.prowhocol { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .prowho .em { font-size: 11px; color: var(--body); font-variant-numeric: tabular-nums; }
+/* the wallet aggregate, relocated here from the hero: a fact for when you ask */
+.proagg { font-size: 10.5px; color: var(--label); font-variant-numeric: tabular-nums; white-space: nowrap; }
 button.proitem {
   display: block; width: 100%; text-align: left; background: none; border: 0;
   border-radius: 10px; padding: 8px 10px; font-size: 13px; color: var(--ink);
@@ -381,17 +405,24 @@ button.proitem.danger:hover { background: var(--danger-tint); }
 
 /* ---------- the deck: full-page zones, hairline-divided ---------- */
 .deck { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-/* the hero: one centered axis · card, name, balance, gauge, stats, verbs */
+/* the hero: one centered axis · name, card, balance, gauge, caption, verbs.
+   The top padding keeps the name from sitting against the viewport edge. */
 .hero {
   flex: none; display: flex; flex-direction: column; align-items: center;
-  padding: 22px 0 22px; border-bottom: 1px solid var(--hairline-soft);
+  padding: 40px 0 22px; border-bottom: 1px solid var(--hairline-soft);
 }
-.heroid-wrap { margin: 8px 0 16px; }
-.heroid { display: flex; align-items: center; justify-content: center; gap: 11px; min-width: 0; }
+/* swap zones are grid stacks: the exiting and entering content share one
+   cell and cross-fade in place · no blank frame, no height jump */
+.heroid-wrap { display: grid; place-items: center; margin: 0 0 18px; }
+.heroid {
+  grid-area: 1 / 1;
+  display: flex; align-items: center; justify-content: center; gap: 11px; min-width: 0;
+}
 .heroid h1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60vw; }
 .heroempty { padding: 26px 24px 16px; text-align: center; }
 .heroempty p { margin-top: 8px; font-size: 12.5px; color: var(--label); max-width: 380px; }
-.dbody { display: flex; flex-direction: column; align-items: center; min-width: 0; }
+.dbody-wrap { display: grid; place-items: start center; width: 100%; }
+.dbody { grid-area: 1 / 1; display: flex; flex-direction: column; align-items: center; min-width: 0; }
 /* bottom zone: one full-width surface, paned by a quiet segmented toggle */
 .bottom { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .tabrow { flex: none; display: flex; align-items: center; gap: 4px; padding: 14px 32px 0; }
@@ -405,11 +436,11 @@ button.proitem.danger:hover { background: var(--danger-tint); }
 .tabbtn:hover { color: var(--body); border: 0; }
 .tabbtn.on { color: var(--ink); }
 .tabbtn:disabled { opacity: 0.4; }
-.tabbtn .t, .tabbtn .n { position: relative; z-index: 1; }
-.tabbtn .n { font-size: 11.5px; color: var(--label); }
+.tabbtn .t { position: relative; z-index: 1; }
 .tabind { position: absolute; inset: 0; border-radius: 999px; background: var(--inset); }
-.tabbody { flex: 1; min-height: 0; position: relative; }
-.pane { height: 100%; display: flex; flex-direction: column; min-height: 0; padding: 14px 36px 14px; overflow-y: auto; }
+/* the pane swap shares the same grid-stack cross-fade as the hero zones */
+.tabbody { flex: 1; min-height: 0; position: relative; display: grid; grid-template-rows: minmax(0, 1fr); }
+.pane { grid-area: 1 / 1; height: 100%; display: flex; flex-direction: column; min-height: 0; padding: 14px 36px 14px; overflow-y: auto; }
 .panein { min-height: 0; }
 .panenote { font-size: 12px; color: var(--label); margin-bottom: 6px; }
 .listwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -438,40 +469,22 @@ button.proitem.danger:hover { background: var(--danger-tint); }
 .verbnote { font-size: 12px; color: var(--label); }
 .verbnote.err { color: var(--danger); }
 
-/* (2) the money, centered: the card's readout */
-.money { margin-top: 14px; display: flex; flex-direction: column; align-items: center; }
-.money .lbl { display: block; margin-bottom: 8px; }
+/* (2) the money, centered: the card's readout · one figure, one gauge, one
+   whisper caption. The old label, % pill and stats band live in the caption
+   and the tabs now. */
+.money { margin-top: 16px; display: flex; flex-direction: column; align-items: center; }
 .fig { display: flex; align-items: baseline; justify-content: center; color: var(--ink); }
 .fig .cur { font-family: var(--font-display), sans-serif; font-weight: 500; font-size: 28px; color: var(--body); margin-right: 4px; }
 .fig .int { font-family: var(--font-display), sans-serif; font-weight: 600; font-size: 64px; line-height: 0.88; letter-spacing: -0.02em; }
 .fig .dec { font-family: var(--font-display), sans-serif; font-weight: 500; font-size: 28px; color: var(--body); margin-left: 2px; }
-.fig .ofcap { font-size: 12.5px; font-weight: 400; color: var(--label); margin-left: 14px; white-space: nowrap; }
 .deck.dead .fig, .deck.dead .fig .cur, .deck.dead .fig .dec { color: var(--ghost); }
-/* the gauge line owns the center; the resets countdown overflows to its right */
-.gaugerow { position: relative; margin-top: 16px; width: min(560px, 84vw); }
+.gaugerow { margin-top: 18px; width: min(560px, 84vw); }
 .gauge { width: 100%; height: 5px; border-radius: 999px; background: var(--inset); position: relative; }
 .gauge .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: var(--accent); transition: width 0.3s ease; }
-.gauge .pct {
-  position: absolute; right: -4px; top: 50%; transform: translateY(-50%);
-  background: var(--canvas); border: 1px solid var(--edge); box-shadow: 0 1px 3px rgba(20, 20, 23, 0.1);
-  border-radius: 999px; padding: 2.5px 7px;
-  font-family: var(--font-display), sans-serif; font-weight: 600; font-size: 10.5px; color: var(--ink); white-space: nowrap;
-  font-variant-numeric: tabular-nums lining-nums;
-}
 .deck.dead .gauge .fill { background: var(--hairline); }
-.deck.dead .gauge .pct { display: none; }
-.resets {
-  position: absolute; left: calc(100% + 14px); top: 50%; transform: translateY(-50%);
-  font-size: 12px; color: var(--label); white-space: nowrap;
-}
-@media (max-width: 820px) {
-  .resets { position: static; transform: none; margin-top: 8px; text-align: center; }
-}
-
-/* (3) the inline stats line: the old KPI band at whisper volume */
-.statline { display: flex; align-items: baseline; justify-content: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; font-size: 12.5px; color: var(--body); }
-.statline i { width: 3px; height: 3px; border-radius: 50%; background: var(--ghost); align-self: center; }
-.deck.dead .statline { color: var(--ghost); }
+/* the caption: everything the figure needs said, once, quietly */
+.caption { margin-top: 12px; font-size: 12.5px; color: var(--label); text-align: center; max-width: min(560px, 84vw); }
+.deck.dead .caption { color: var(--ghost); }
 
 /* (4) activity: barcode strip + the charge list */
 .chartblock { flex: none; }
@@ -511,7 +524,7 @@ button.proitem.danger:hover { background: var(--danger-tint); }
 .railchip { display: inline-block; background: var(--inset); border-radius: 999px; padding: 3px 10px; font-size: 11.5px; font-weight: 500; color: var(--body); }
 .a-amt { text-align: right; font-family: var(--font-display), sans-serif; font-weight: 500; font-size: 15px; color: var(--ink); font-variant-numeric: tabular-nums lining-nums; }
 .a-amt .cur { color: var(--body); font-size: 12px; margin-right: 1px; }
-.a-state { display: flex; align-items: center; gap: 6px; padding-left: 22px; font-size: 12.5px; color: var(--body); text-transform: lowercase; }
+.a-state { display: flex; align-items: center; gap: 6px; padding-left: 22px; font-size: 12.5px; color: var(--body); }
 .gdot { width: 5px; height: 5px; border-radius: 999px; background: var(--ghost); flex: none; }
 .a-state.blocked { color: var(--danger); }
 .a-state.blocked .gdot { background: var(--danger); }
@@ -552,7 +565,7 @@ a.srow:hover { background: var(--hover); }
 .thumb svg { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 10px; display: block; }
 .srow .nm { display: block; font-size: 13px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .srow .pan { display: block; font-size: 10.5px; letter-spacing: 0.04em; color: var(--label); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-.srow .st { display: flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 500; color: var(--body); text-transform: lowercase; }
+.srow .st { display: flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 500; color: var(--body); }
 .srow .st b { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
 .srow .capb { text-align: right; }
 .srow .capb .c1 { display: block; font-family: var(--font-display), sans-serif; font-size: 13.5px; font-weight: 500; color: var(--ink); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -581,17 +594,18 @@ a.srow:hover { background: var(--hover); }
 .cdots { flex: none; display: flex; align-items: center; justify-content: center; gap: 6px; }
 .cdot { display: block; width: 6px; height: 4px; border-radius: 999px; background: var(--dot); border: 0; padding: 0; transition: all 0.3s var(--ease); cursor: pointer; }
 .cdot.on { width: 20px; background: var(--ink); }
-.agg { margin-top: 9px; font-size: 11.5px; color: var(--label); }
-/* the + beside the dots: the only create affordance */
-.cplus {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; margin-left: 4px; padding: 0;
+/* the + at the deck's right edge: "another card could live here" · the only
+   create affordance, floating just beyond the peek sliver */
+.deckplus {
+  position: absolute; left: calc(100% + 30px); top: 50%; transform: translateY(-50%);
+  display: grid; place-items: center;
+  width: 30px; height: 30px; padding: 0; z-index: 40;
   border-radius: 50%; border: 1px solid var(--hairline); background: var(--canvas);
   color: var(--label); cursor: pointer;
   transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
-.cplus svg { width: 10px; height: 10px; }
-.cplus:hover { color: var(--ink); border-color: var(--hairline-strong); background: var(--hover); }
+.deckplus svg { width: 12px; height: 12px; }
+.deckplus:hover { color: var(--ink); border-color: var(--hairline-strong); background: var(--hover); }
 .bayempty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px 36px; font-size: 12.5px; color: var(--label); text-align: center; }
 
 /* ---------- the issue modal: a card being born ---------- */
@@ -877,6 +891,10 @@ main.narrow .panel { padding: 20px; }
 
 /* ---------- graceful fallback under 1100px: rail becomes a top bar ---------- */
 @media (max-width: 1099px) {
+  /* nothing may scroll the page sideways on small screens (clip, not hidden:
+     clip never creates a scroll container) */
+  html { overflow-x: clip; }
+  body { overflow-x: clip; }
   .app { flex-direction: column; }
   .rail {
     width: 100%; height: auto; flex-direction: row; align-items: center;
@@ -885,13 +903,11 @@ main.narrow .panel { padding: 20px; }
   }
   .railback { margin-top: 0; margin-left: 12px; }
   .railfoot { margin-top: 0; margin-left: auto; flex-direction: row; gap: 12px; }
-  .net { flex-direction: row; gap: 7px; }
-  .promenu { left: auto; right: 0; bottom: auto; top: calc(100% + 10px); }
   .tabrow { padding: 12px 20px 0; }
   .pane { padding: 12px 24px 14px; overflow-y: visible; }
+  .hero { padding-top: 26px; }
   .fig .int { font-size: 48px; }
   .fig .cur, .fig .dec { font-size: 22px; }
-  .fig .ofcap { display: none; }
   .alist { overflow-y: visible; }
 }
 @media (max-width: 720px) {
@@ -901,9 +917,37 @@ main.narrow .panel { padding: 20px; }
   .tcol + .tcol .trow:first-child { border-top: 1px solid var(--hairline-soft); }
 }
 
+/* ---------- phones ---------- */
+@media (max-width: 560px) {
+  /* the deck shrinks just enough to keep the + affordance on-canvas */
+  .stack { width: min(330px, calc(100vw - 92px)); }
+  .deckplus { left: calc(100% + 12px); width: 28px; height: 28px; }
+  .card .num { font-size: 13px; gap: 10px; letter-spacing: 0.06em; }
+  .card .inner { padding: 16px 18px; }
+  .heroid h1 { max-width: 70vw; }
+  .gaugerow { width: calc(100vw - 48px); }
+  .caption { max-width: calc(100vw - 48px); }
+  .hgrid { grid-template-columns: repeat(2, 1fr); }
+  .tabrow { padding: 12px 12px 0; gap: 0; }
+  .tabbtn { padding: 0 11px; }
+  .pane { padding: 12px 16px 14px; }
+  .promenu { max-width: calc(100vw - 24px); }
+  main.narrow { padding: 48px 20px; }
+}
+
+/* iOS Safari zooms into any focused control whose font-size is under 16px ·
+   on touch devices every text control meets the bar, so focusing never zooms */
+@media (pointer: coarse) {
+  input, select, textarea { font-size: 16px; }
+}
+
+/* boot recovery (the watchdog under the loading note) */
+.bootstuck { margin-top: 22px; }
+.bootstuck p { font-size: 12px; color: var(--label); margin-bottom: 12px; }
+
 @media (prefers-reduced-motion: reduce) {
   .rv { animation: none; opacity: 1; filter: none; transform: none; }
-  .pill.live b, .statusword b, .net b { animation: none; }
+  .statusword .sealring { animation: none; stroke-dashoffset: 0; }
   .tchips span, .minicard .mc-pan, .minicard .mc-name, .minicard .mc-cap { transition: none; }
   .card::before { transition: none; }
 }

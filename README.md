@@ -45,7 +45,7 @@ MCP tools, served over Streamable HTTP. The exact set a card exposes matches its
 | `pay` | Send USDC on Base within the card's limits; blocks until confirmed on-chain |
 | `paid_fetch` | Fetch a URL; on HTTP 402 (x402), pay automatically and return the content |
 | `fiat_pay` | Buy over Visa rails (simulated: Stripe test-mode Issuing) against the same budget; with settlement on, the receipt carries the on-chain tx |
-| `card_credentials` | Reveal the linked test-mode virtual Visa (number/expiry/cvc) so the agent can check out at a merchant |
+| `card_credentials` | Reveal the card's test-mode virtual Visa (number/expiry/cvc) so the agent can check out at a merchant; every card auto-links one on first need |
 | `execute` | Run scoped contract calls (e.g. approve + swap, stake, mint) atomically in one redemption; only on cards with contract scope |
 | `issue_subcard` | Mint a tighter child card for a sub-agent; pay caps and contract scope must both nest inside the parent's |
 | `revoke_subcard` | Instantly kill a sub-card (and its descendants) |

@@ -13,7 +13,7 @@ export type FeedRow = { ch: Charge; cardName: string };
 export const chargeOk = (ch: Charge) => OK_STATUSES.has(ch.status);
 
 export function railLabel(kind: string): string {
-  if (kind.includes("fiat") || kind.includes("visa") || kind.includes("stripe")) return "fiat";
+  if (kind.includes("fiat") || kind.includes("visa") || kind.includes("stripe")) return "Fiat";
   if (kind.includes("x402") || kind.includes("pay") || kind.includes("transfer")) return "x402";
   return kind;
 }
@@ -24,10 +24,10 @@ export function tidyMemo(s: string): string {
   return s.replace(HEXISH, (m) => shortHex(m, 6, 4));
 }
 
-/** "jun 9 · 14:32" · the charge row's quiet timestamp */
+/** "Jun 9 · 14:32" · the charge row's quiet timestamp */
 export function fmtWhen(unixSec: number): string {
   const d = new Date(unixSec * 1000);
-  const day = d.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase();
+  const day = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
   const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
   return `${day} · ${time}`;
 }
@@ -45,7 +45,7 @@ export function feedStats(feed: FeedRow[]) {
   const total30 = ok.reduce((s, r) => s + cost(r), 0);
   const now = Math.floor(Date.now() / 1000);
   const dayLabels = Array.from({ length: 30 }, (_, i) =>
-    new Date((now - (29 - i) * 86400) * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase(),
+    new Date((now - (29 - i) * 86400) * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
   );
   // the barcode strip wants finer grain: 4-hour bins, 180 across the 30 days
   const bins = new Array(180).fill(0);
@@ -85,7 +85,7 @@ export function ChargeList({ rows, empty }: { rows: FeedRow[]; empty: string }) 
             </span>
             <span className={`a-state${ok ? "" : " blocked"}`}>
               <span className="gdot" />
-              {ok ? "settled" : ch.status}
+              {ok ? "Settled" : ch.status}
             </span>
             <span className="a-rcpt">
               {ch.tx ? (

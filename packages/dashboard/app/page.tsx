@@ -10,7 +10,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { api, type TreeNode, type CardTermsInput, type CompileLabel, type CompileResult } from "@/lib/api";
 import { useRemit } from "./useRemit";
 import { Cockpit } from "./components/Shell";
-import { Dossier } from "./components/Dossier";
+import { Dossier, bayAggregate } from "./components/Dossier";
 import { ConnectChips, UrlBox } from "./components/Authority";
 import { Select } from "./components/Select";
 import type { FeedRow } from "./components/Activity";
@@ -28,6 +28,33 @@ export default function Home() {
   const [retryNonce, setRetryNonce] = useState(0);
   const onboardingRef = useRef(false);
   const prevDidRef = useRef<string | undefined>(undefined);
+
+  // Boot watchdog: if a pre-dashboard screen still shows after this long, the
+  // session is wedged (Privy init, a stale session's token refresh, the wallet
+  // iframe · all seen on iOS Safari / in-app browsers). Surface recovery
+  // actions instead of an infinite spinner. Re-arms on every boot-gate
+  // transition so a NORMAL step (fresh login, wallet landing) never inherits
+  // a stale 12s clock and flashes the recovery panel instantly.
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    setSlow(false);
+    const t = setTimeout(() => setSlow(true), 12_000);
+    return () => clearTimeout(t);
+  }, [ready, authenticated, address, probed, onboarded]);
+  const reset = useCallback(async () => {
+    try {
+      // a wedged SDK can also hang logout · bound it
+      await Promise.race([logout(), new Promise((r) => setTimeout(r, 2500))]);
+    } catch {
+      // a failed sign-out still proceeds to the storage sweep
+    }
+    try {
+      for (const k of Object.keys(localStorage)) if (k.startsWith("privy:")) localStorage.removeItem(k);
+    } catch {
+      // storage unavailable (private mode) · the reload is still the reset
+    }
+    window.location.reload();
+  }, [logout]);
 
   // Re-arm onboarding whenever the Privy identity changes (logout, or switching to a
   // different account in the SAME tab · the Home component instance and its state
@@ -89,27 +116,27 @@ export default function Home() {
     })();
   }, [probed, authenticated, address, did, embeddedReady, onboarded, sign7702, signOnboardProof, retryNonce]);
 
-  if (!ready) return <Centered note="loading…" />;
+  if (!ready) return <Centered note="Loading…" slow={slow} onReset={reset} />;
   if (!authenticated) return <Login onLogin={login} />;
 
-  if (!address) return <Centered note="creating your embedded wallet…" />;
-  if (!onboarded && !probed) return <Centered note="loading…" />;
+  if (!address) return <Centered note="Creating your embedded wallet…" slow={slow} onReset={reset} />;
+  if (!onboarded && !probed) return <Centered note="Loading…" slow={slow} onReset={reset} />;
   if (!onboarded) {
     return (
       <main className="narrow" data-testid="onboarding">
         <div className="panel" style={{ textAlign: "center", padding: 40 }}>
           <span className="pill live" style={{ marginBottom: 16 }}>
             <b />
-            {onboarding ? "activating" : "activation pending"}
+            {onboarding ? "Activating" : "Activation Pending"}
           </span>
           <p style={{ color: "var(--body)", fontSize: 13, marginTop: 14 }}>
             {onboarding
-              ? "signing your 7702 authorization · silent, grants nothing on its own"
-              : "waiting for your embedded wallet"}
+              ? "Signing your 7702 authorization · silent, grants nothing on its own"
+              : "Waiting for your embedded wallet"}
           </p>
           {onboardErr && (
             <p className="err" style={{ marginTop: 12 }}>
-              onboard failed: {onboardErr}{" "}
+              Onboard failed: {onboardErr}{" "}
               <button
                 style={{ marginLeft: 8 }}
                 onClick={() => {
@@ -118,7 +145,7 @@ export default function Home() {
                   setRetryNonce((n) => n + 1);
                 }}
               >
-                retry
+                Retry
               </button>
             </p>
           )}
@@ -130,10 +157,23 @@ export default function Home() {
   return <Dashboard remit={remit} address={address} onLogout={logout} />;
 }
 
-function Centered({ note }: { note: string }) {
+function Centered({ note, slow, onReset }: { note: string; slow?: boolean; onReset?: () => void }) {
   return (
     <main className="narrow" style={{ textAlign: "center" }}>
       <span style={{ color: "var(--body)", fontSize: 13 }}>{note}</span>
+      {slow && (
+        <div className="bootstuck" data-testid="boot-stuck">
+          <p>Still going · the session on this device may be wedged.</p>
+          <div className="row" style={{ justifyContent: "center" }}>
+            <button onClick={() => window.location.reload()}>Reload</button>
+            {onReset && (
+              <button onClick={onReset} data-testid="boot-reset">
+                Sign Out and Start Over
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -145,14 +185,14 @@ function Login({ onLogin }: { onLogin: () => void }) {
         remit
       </h1>
       <p className="rv serif" style={{ animationDelay: ".16s", fontSize: 16, marginTop: 6 }}>
-        authority, lent not given.
+        Authority, lent not given.
       </p>
       <p className="rv" style={{ animationDelay: ".24s", color: "var(--body)", fontSize: 13, margin: "18px 0 26px" }}>
-        scoped, revocable spending cards for your agents · email or Google · no seed phrase
+        Scoped, revocable spending cards for your agents · email or Google · no seed phrase
       </p>
       <span className="rv" style={{ animationDelay: ".32s", display: "inline-block" }}>
         <button className="primary" onClick={onLogin} data-testid="login">
-          sign in
+          Sign In
         </button>
       </span>
     </main>
@@ -260,10 +300,11 @@ function Dashboard({
       onLogout={onLogout}
       address={address}
       nukeable={tree.some((n) => n.card.status === "active" || n.card.status === "frozen")}
+      aggregate={loaded ? bayAggregate(tree) : undefined}
     >
       {error && (
         <p className="err" style={{ margin: "0 8px 10px" }}>
-          api error: {error}
+          API error: {error}
         </p>
       )}
 
@@ -357,7 +398,7 @@ function IssueModal({
   onClose?: () => void; // absent on first-run: the modal is the only door
 }) {
   // card
-  const [name, setName] = useState("agent card");
+  const [name, setName] = useState("Agent Card");
   const [expiryDays, setExpiryDays] = useState(30);
   const [maxUses, setMaxUses] = useState("");
   const [subcards, setSubcards] = useState(true);
@@ -476,18 +517,18 @@ function IssueModal({
     const hasTargets = splitList(targets).length > 0;
     const hasSelectors = splitSelectors(selectors).length > 0;
     if (hasTargets !== hasSelectors) {
-      setErr("the execute scope needs both contracts and methods · fill both or clear both");
+      setErr("The execute scope needs both contracts and methods · fill both or clear both");
       return;
     }
     // tokens/per-trade live inside the contract block; without a scope they'd be
     // silently dropped from the signed terms
     if ((splitList(tokens).length > 0 || perTrade.trim()) && !hasTargets) {
-      setErr("a token allowance needs a contract scope · add contracts and methods, or clear the token fields");
+      setErr("A token allowance needs a contract scope · add contracts and methods, or clear the token fields");
       return;
     }
     const terms = buildTerms();
     if (!terms.pay && !terms.contract) {
-      setErr("give the card a pay budget or a contract scope · an empty card can do nothing");
+      setErr("Give the card a pay budget or a contract scope · an empty card can do nothing");
       return;
     }
     setBusy(true);
@@ -517,9 +558,9 @@ function IssueModal({
       : lifetime.trim()
         ? `$${lifetime.trim()} lifetime`
         : tg.length
-          ? "execute only"
+          ? "Execute only"
           : "",
-    merchants.trim() ? `${splitList(merchants).length} merchants` : "any merchant",
+    merchants.trim() ? `${splitList(merchants).length} merchants` : "Any merchant",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -527,13 +568,13 @@ function IssueModal({
   if (amount.trim() && parseFloat(amount) > 0) chips.push(`$${amount.trim()} ${periodWord(period)}`);
   if (lifetime.trim()) chips.push(`$${lifetime.trim()} lifetime`);
   if (perTx.trim()) chips.push(`≤ $${perTx.trim()} per charge`);
-  chips.push(merchants.trim() ? `${splitList(merchants).length} merchants` : "any merchant");
+  chips.push(merchants.trim() ? `${splitList(merchants).length} merchants` : "Any merchant");
   chips.push(
-    `expires ${new Date(Date.now() + expiryDays * 86400000).toLocaleDateString("en-US", { month: "short", day: "numeric" }).toLowerCase()}`,
+    `Expires ${new Date(Date.now() + expiryDays * 86400000).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
   );
   if (tg.length) chips.push(`${tg.length} contract${tg.length === 1 ? "" : "s"} in scope`);
   if (perTrade.trim()) chips.push(`≤ $${perTrade.trim()} per trade`);
-  chips.push(subcards ? "sub-cards allowed" : "no sub-cards");
+  chips.push(subcards ? "Sub-cards allowed" : "No sub-cards");
 
   const field = (label: string, el: React.ReactNode) => (
     <div className="field">
@@ -556,18 +597,18 @@ function IssueModal({
         className="modal"
         role="dialog"
         aria-modal="true"
-        aria-label="issue a new card"
+        aria-label="Issue a New Card"
         initial={{ opacity: 0, y: 26, scale: 0.97 }}
         animate={{ opacity: 1, y: 0, scale: 1, transition: { type: "spring", stiffness: 360, damping: 30 } }}
         exit={{ opacity: 0, y: 14, scale: 0.98, transition: { duration: 0.16 } }}
       >
         <div className="mhead">
           <div>
-            <div className="mtitle">{firstCard ? "issue your first card" : "issue a new card"}</div>
-            <div className="msub">plain language, compiled to on-chain caveats · client-signed, the url is the credential</div>
+            <div className="mtitle">{firstCard ? "Issue Your First Card" : "Issue a New Card"}</div>
+            <div className="msub">Plain language, compiled to on-chain caveats · client-signed, the URL is the credential</div>
           </div>
           {onClose && (
-            <button className="closex" onClick={onClose} aria-label="close">
+            <button className="closex" onClick={onClose} aria-label="Close">
               ✕
             </button>
           )}
@@ -576,13 +617,13 @@ function IssueModal({
         {issuedUrl ? (
           <div style={{ marginTop: 18 }}>
             <div className="ok" style={{ marginBottom: 8 }}>
-              card issued · hand this url to your agent (it is the credential):
+              Card issued · hand this URL to your agent (it is the credential):
             </div>
             <UrlBox url={issuedUrl} testid="issued-url" />
             <ConnectChips url={issuedUrl} cardName={name} />
             <div className="mfoot">
               <button className="dbtn" onClick={() => onClose?.()}>
-                done
+                Done
               </button>
             </div>
           </div>
@@ -595,7 +636,7 @@ function IssueModal({
               // the modal's first focusable thing: keyboard users land here, not behind the scrim
               autoFocus
               disabled={compiling}
-              placeholder='describe the card · "$5 a week for research apis, any merchant, expires in 30 days"'
+              placeholder='Describe the card · "$5 a week for research APIs, any merchant, expires in 30 days"'
               onChange={(e) => setIntent(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) compile();
@@ -603,15 +644,15 @@ function IssueModal({
               data-testid="compile-intent"
             />
             {compiling && (
-              <div className="draftbar" role="progressbar" aria-label="venice is drafting">
+              <div className="draftbar" role="progressbar" aria-label="Venice is drafting">
                 <i />
               </div>
             )}
             <div className="drow">
               <span className="mhint">
                 {compiling
-                  ? "venice is reading your intent · compiling it to on-chain terms…"
-                  : "venice drafts · you review the compiled terms before anything is signed"}
+                  ? "Venice is reading your intent · compiling it to on-chain terms…"
+                  : "Venice drafts · you review the compiled terms before anything is signed"}
               </span>
               <button
                 className={`dbtn${drafted && !compiling ? " quiet" : ""}`}
@@ -620,7 +661,7 @@ function IssueModal({
                 data-testid="compile-go"
               >
                 {compiling && <span className="bspin" aria-hidden />}
-                {compiling ? "drafting…" : "draft terms"}
+                {compiling ? "Drafting…" : "Draft Terms"}
               </button>
             </div>
             {compileErr && (
@@ -637,7 +678,7 @@ function IssueModal({
                   <ChipDots />
                 </div>
                 <div className="mc-pan">0x••••&nbsp;&nbsp;••••&nbsp;&nbsp;••••</div>
-                <div className="mc-name">{name || "agent card"}</div>
+                <div className="mc-name">{name || "Agent Card"}</div>
                 <div className="mc-cap num">{capLine}</div>
                 <div className="mc-band">
                   {/* the silk flows while the draft materializes · the card coming alive */}
@@ -663,7 +704,7 @@ function IssueModal({
                       <path d="M6 1.2 11 10H1z" strokeLinejoin="round" />
                       <path d="M6 4.6v2.6M6 8.9v.1" />
                     </svg>
-                    venice adjusted the draft · review before signing
+                    Venice adjusted the draft · review before signing
                   </div>
                   <ul>
                     {warnings.map((w, i) => (
@@ -673,35 +714,51 @@ function IssueModal({
                 </div>
               )}
               {drafted && (
-                <p className="cbnote">addresses resolve from a verified registry or your own text · the model never supplies them</p>
+                <p className="cbnote">Addresses resolve from a verified registry or your own text · the model never supplies them</p>
               )}
             </div>
 
             <button className="ordiv" onClick={() => setEditOpen((v) => !v)}>
-              <span>{editOpen ? "hide the term sheet" : "edit terms yourself"}</span>
+              <span>{editOpen ? "Hide the Term Sheet" : "Edit Terms Yourself"}</span>
             </button>
 
-            {editOpen && (
-              <div className={`composer2${draftN ? " flash" : ""}`} key={draftN}>
+            <AnimatePresence initial={false}>
+              {editOpen && (
+                <motion.div
+                  key="termsheet"
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{
+                    height: "auto",
+                    opacity: 1,
+                    transition: { height: { duration: 0.36, ease: [0.22, 1, 0.36, 1] }, opacity: { duration: 0.28, delay: 0.08 } },
+                  }}
+                  exit={{
+                    height: 0,
+                    opacity: 0,
+                    transition: { height: { duration: 0.28, ease: [0.22, 1, 0.36, 1] }, opacity: { duration: 0.14 } },
+                  }}
+                  style={{ overflow: "hidden" }}
+                >
+                  <div className={`composer2${draftN ? " flash" : ""}`} key={draftN}>
                 <div className="csec">
-                  <div className="cseclbl">card</div>
+                  <div className="cseclbl">Card</div>
                   <div className="csecrow">
-                    {field("name", <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: 150 }} data-testid="composer-name" />)}
+                    {field("Name", <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: 150 }} data-testid="composer-name" />)}
                     {field(
-                      "expires · days",
+                      "Expires · Days",
                       <input type="number" value={expiryDays} onChange={(e) => setExpiryDays(Number(e.target.value))} style={{ width: 72 }} />,
                     )}
                     {field(
-                      "max uses",
+                      "Max Uses",
                       <input value={maxUses} onChange={(e) => setMaxUses(e.target.value)} placeholder="∞" style={{ width: 72 }} data-testid="composer-maxuses" />,
                     )}
                     {field(
-                      "sub-cards",
+                      "Sub-Cards",
                       <Select
                         value={subcards ? "yes" : "no"}
                         options={[
-                          { value: "yes", label: "allowed" },
-                          { value: "no", label: "no" },
+                          { value: "yes", label: "Allowed" },
+                          { value: "no", label: "No" },
                         ]}
                         onChange={(v) => setSubcards(v === "yes")}
                         width={104}
@@ -711,46 +768,46 @@ function IssueModal({
                 </div>
 
                 <div className="csec">
-                  <div className="cseclbl">pay · usdc</div>
+                  <div className="cseclbl">Pay · USDC</div>
                   <div className="csecrow">
                     {field(
-                      "budget",
-                      <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-amount" />,
+                      "Budget",
+                      <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="None" style={{ width: 92 }} data-testid="composer-amount" />,
                     )}
                     {field(
-                      "per",
+                      "Per",
                       <Select
                         value={String(period)}
                         options={[
-                          { value: "86400", label: "day" },
-                          { value: "604800", label: "week" },
-                          { value: "2592000", label: "30 days" },
+                          { value: "86400", label: "Day" },
+                          { value: "604800", label: "Week" },
+                          { value: "2592000", label: "30 Days" },
                         ]}
                         onChange={(v) => setPeriod(Number(v))}
                         width={104}
                       />,
                     )}
                     {field(
-                      "lifetime cap",
-                      <input value={lifetime} onChange={(e) => setLifetime(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-lifetime" />,
+                      "Lifetime Cap",
+                      <input value={lifetime} onChange={(e) => setLifetime(e.target.value)} placeholder="None" style={{ width: 92 }} data-testid="composer-lifetime" />,
                     )}
-                    {field("per-charge max", <input value={perTx} onChange={(e) => setPerTx(e.target.value)} placeholder="none" style={{ width: 92 }} />)}
+                    {field("Per-Charge Max", <input value={perTx} onChange={(e) => setPerTx(e.target.value)} placeholder="None" style={{ width: 92 }} />)}
                     {field(
-                      "merchant lock",
+                      "Merchant Lock",
                       <input value={merchants} onChange={(e) => setMerchants(e.target.value)} placeholder="0x…, 0x…" style={{ width: 170 }} />,
                     )}
                   </div>
                 </div>
 
                 <div className="csec">
-                  <div className="cseclbl">execute · contracts</div>
+                  <div className="cseclbl">Execute · Contracts</div>
                   <div className="csecrow">
                     {field(
-                      "contracts",
+                      "Contracts",
                       <input className="wide" value={targets} onChange={(e) => setTargets(e.target.value)} placeholder="0x…, 0x…" data-testid="composer-targets" />,
                     )}
                     {field(
-                      "methods",
+                      "Methods",
                       <input
                         className="wide"
                         value={selectors}
@@ -760,18 +817,20 @@ function IssueModal({
                       />,
                     )}
                     {field(
-                      "tokens · allowance",
+                      "Tokens · Allowance",
                       <input value={tokens} onChange={(e) => setTokens(e.target.value)} placeholder="0x… · optional" style={{ width: 136 }} data-testid="composer-tokens" />,
                     )}
                     {field(
-                      "per-trade max",
-                      <input value={perTrade} onChange={(e) => setPerTrade(e.target.value)} placeholder="none" style={{ width: 92 }} data-testid="composer-pertrademax" />,
+                      "Per-Trade Max",
+                      <input value={perTrade} onChange={(e) => setPerTrade(e.target.value)} placeholder="None" style={{ width: 92 }} data-testid="composer-pertrademax" />,
                     )}
                   </div>
                 </div>
-                <p className="chint">leave pay empty for an execute-only card · leave contracts empty for a pay-only card</p>
-              </div>
-            )}
+                <p className="chint">Leave pay empty for an execute-only card · leave contracts empty for a pay-only card</p>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {err && (
               <p className="err" style={{ marginTop: 12 }}>
@@ -782,11 +841,11 @@ function IssueModal({
             <div className="mfoot">
               {onClose && (
                 <button className="mghost" onClick={onClose}>
-                  cancel
+                  Cancel
                 </button>
               )}
               <button className="dbtn" onClick={issue} disabled={busy} data-testid="composer-issue">
-                {busy ? "signing…" : "review + sign"}
+                {busy ? "Signing…" : "Review + Sign"}
               </button>
             </div>
           </>

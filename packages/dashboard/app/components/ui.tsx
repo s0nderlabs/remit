@@ -26,6 +26,11 @@ export function fmtUsd(v: string | number | null | undefined): string {
   return `$${w}.${c}`;
 }
 
+/** display-capitalize a status word coming from data: "revoked" -> "Revoked" */
+export function capWord(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
 export function shortHex(s: string | null | undefined, head = 6, tail = 4): string {
   if (!s) return "";
   if (s.length <= head + tail + 1) return s;
@@ -328,13 +333,33 @@ export type CardStatus = "active" | "frozen" | "revoked" | "expired" | "nuked" |
 
 export const isDead = (s: CardStatus) => s !== "active" && s !== "frozen";
 
-/** lowercase status word with a state dot · quieter than a pill, reads like a fact */
+/** the status word with a state glyph · quieter than a pill, reads like a fact.
+ *  No looping pulse: active wears a seal (filled core in a fine ring, the ring
+ *  draws once on mount), frozen a mini snowflake, dead a hollow ring. */
 export function StatusPill({ status }: { status: CardStatus }) {
   const tone = status === "active" ? "live" : status === "frozen" ? "frozen" : "dead";
+  const word = capWord(status);
   return (
     <span className={`statusword ${tone}`} data-testid="status-pill">
-      <b />
-      {status}
+      <StatusGlyph tone={tone} />
+      {word}
     </span>
+  );
+}
+
+function StatusGlyph({ tone }: { tone: "live" | "frozen" | "dead" }) {
+  if (tone === "frozen") return <IconSnowflake size={11} />;
+  if (tone === "dead") {
+    return (
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden>
+        <circle cx="5" cy="5" r="3.1" stroke="currentColor" strokeWidth="1.4" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden>
+      <circle className="sealring" cx="5.5" cy="5.5" r="4.6" stroke="currentColor" strokeWidth="1" opacity="0.4" pathLength="1" />
+      <circle cx="5.5" cy="5.5" r="2.1" fill="currentColor" />
+    </svg>
   );
 }

@@ -5,7 +5,7 @@
 
 import Link from "next/link";
 import type { TreeNode } from "@/lib/api";
-import { Guilloche, fmtUsd, isDead, panGroups, periodLabel } from "./ui";
+import { Guilloche, capWord, fmtUsd, isDead, panGroups, periodLabel } from "./ui";
 import { allowance } from "./Authority";
 
 function rowClass(status: string): string {
@@ -32,8 +32,8 @@ export function SubRows({
           const capLine = capAmt
             ? `≤ $${capAmt}${per}`
             : ct
-              ? `execute${ct.perTradeMax ? ` · ≤ $${ct.perTradeMax}/trade` : ""}`
-              : "unmetered";
+              ? `Execute${ct.perTradeMax ? ` · ≤ $${ct.perTradeMax}/trade` : ""}`
+              : "Unmetered";
           const { spent } = allowance(c);
           const dead = isDead(c.status);
           return (
@@ -47,13 +47,13 @@ export function SubRows({
               </span>
               <span className="st">
                 <b />
-                {c.status}
+                {capWord(c.status)}
               </span>
               <span className="capb">
                 <span className="c1">{capLine}</span>
                 <span className="c2">
                   {dead || spent === null || spent === 0 ? (
-                    "no spend"
+                    "No spend"
                   ) : (
                     <>
                       <span className="data">{fmtUsd(spent)}</span> spent
@@ -71,7 +71,7 @@ export function SubRows({
         })}
       </div>
       <div className="cascade">
-        <span className="data">erc-7710</span> redelegation · revoke root, the tree dies (
+        <span className="data">ERC-7710</span> redelegation · revoke root, the tree dies (
         <span className="data">NonceEnforcer</span> cascade)
       </div>
     </>

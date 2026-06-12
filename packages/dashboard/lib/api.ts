@@ -19,21 +19,69 @@ export type WireDelegation = {
   signature: Hex;
 };
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = await getAccessToken(); // refreshes if near expiry; null when logged out
-  if (!token) throw new Error("not signed in");
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-      ...init?.headers,
-    },
-    cache: "no-store",
+// Nothing in the boot path may await forever: a wedged token refresh (stale
+// session on iOS Safari, in-app browsers) or a stalled connection must surface
+// as an error the UI can show, never an infinite "Loading…".
+const TOKEN_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 20_000;
+
+async function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  const gate = new Promise<never>((_, reject) => {
+    t = setTimeout(() => reject(new Error(`${what} timed out`)), ms);
   });
-  // a non-JSON error body (edge/proxy HTML on 502/503) must not surface as a raw
-  // SyntaxError · fall back to the status line.
-  const body = await res.json().catch(() => null);
+  try {
+    return await Promise.race([p, gate]);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/** AbortSignal.timeout where it exists; a hand-rolled controller for older WebKit */
+function timeoutSignal(ms: number): AbortSignal | undefined {
+  if (typeof AbortSignal !== "undefined" && "timeout" in AbortSignal) return AbortSignal.timeout(ms);
+  if (typeof AbortController === "undefined") return undefined;
+  const ctl = new AbortController();
+  setTimeout(() => ctl.abort(new DOMException("request timed out", "TimeoutError")), ms);
+  return ctl.signal;
+}
+
+async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  // refreshes if near expiry; null when logged out
+  const token = await withTimeout(getAccessToken(), TOKEN_TIMEOUT_MS, "session token");
+  if (!token) throw new Error("not signed in");
+  const signal = init?.signal ?? timeoutSignal(REQUEST_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      ...init,
+      signal,
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        ...init?.headers,
+      },
+      cache: "no-store",
+    });
+  } catch (e) {
+    if (e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) {
+      throw new Error("request timed out");
+    }
+    throw e;
+  }
+  // a non-JSON ERROR body (edge/proxy HTML on 502/503) falls back to the status
+  // line; a malformed or cut-off body on a 2xx must SURFACE, never return null-as-T
+  let body: { message?: string; error?: string } | null = null;
+  try {
+    body = (await res.json()) as { message?: string; error?: string } | null;
+  } catch (e) {
+    if (res.ok) {
+      if (e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) {
+        throw new Error("request timed out");
+      }
+      throw new Error("malformed response body");
+    }
+  }
   if (!res.ok) throw new Error(body?.message ?? body?.error ?? `http ${res.status}`);
   return body as T;
 }
@@ -104,6 +152,18 @@ export type Charge = {
   at: number;
 };
 
+/** the linked test-mode Visa (owner view) · linked:false when no fiat lane */
+export type FiatCard = {
+  linked: boolean;
+  brand?: string;
+  last4?: string;
+  exp_month?: number;
+  exp_year?: number;
+  number?: string | null;
+  cvc?: string | null;
+  cardholder_name?: string | null;
+};
+
 export const api = {
   // --- Privy lane: onboard + client-signed issuance ---
   // proof = personal_sign("remit-onboard:v1:<did>") · binds the wallet to THIS login
@@ -132,6 +192,7 @@ export const api = {
   cards: () => call<CardState[]>("/cards"),
   card: (id: string) => call<CardState & { charges: Charge[]; k_agent_address: string }>(`/cards/${id}`),
   url: (id: string) => call<{ card_url: string }>(`/cards/${id}/url`),
+  fiatCard: (id: string) => call<FiatCard>(`/cards/${id}/fiat`),
   rotate: (id: string) => call<{ card_url: string }>(`/cards/${id}/rotate`, { method: "POST" }),
   freeze: (id: string) => call<{ status: string }>(`/cards/${id}/freeze`, { method: "POST" }),
   unfreeze: (id: string) => call<{ status: string }>(`/cards/${id}/unfreeze`, { method: "POST" }),

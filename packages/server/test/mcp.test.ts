@@ -264,8 +264,20 @@ describe("fiat tools", () => {
 
   const fakeStripe = {
     authCalls: [] as Array<{ cardId: string; amountCents: number; merchantName: string }>,
+    mintable: true, // false simulates an account with no cardholder (mint impossible)
+    mints: [] as string[],
     async findCardForRemitCard(remitCardId: string) {
       return linked.get(remitCardId) ?? null;
+    },
+    // auto-mint semantics: resolve the link, minting on first need (client.ts parity)
+    async ensureCardForRemitCard(remitCardId: string) {
+      const existing = linked.get(remitCardId);
+      if (existing) return existing;
+      if (!fakeStripe.mintable) return null;
+      const ic = `ic_minted_${fakeStripe.mints.length + 1}`;
+      fakeStripe.mints.push(remitCardId);
+      linked.set(remitCardId, ic);
+      return ic;
     },
     async getCardDetails(icId: string, _opts?: { reveal?: boolean }) {
       return {
@@ -355,16 +367,36 @@ describe("fiat tools", () => {
     await client.close();
   });
 
-  test("no linked Visa: typed no_fiat_card refusal on both tools", async () => {
-    const { secret } = await issue({ pay: { lifetime: { amount: "5" } } }, "unlinked");
+  test("unlinked card AUTO-MINTS a Visa on first use (every delegation is a card)", async () => {
+    const { cardId, secret } = await issue({ pay: { lifetime: { amount: "5" } } }, "unlinked");
+    expect(linked.has(cardId)).toBe(false);
     const client = await connect(`${fiatBase}/c/${secret}/mcp`);
-    const pay = await client.callTool({ name: "fiat_pay", arguments: { amount: "1" } });
-    expect(pay.isError).toBe(true);
-    expect(parse(pay).code).toBe("no_fiat_card");
-    const creds = await client.callTool({ name: "card_credentials", arguments: {} });
-    expect(creds.isError).toBe(true);
-    expect(parse(creds).code).toBe("no_fiat_card");
+    const creds = parse(await client.callTool({ name: "card_credentials", arguments: {} }));
+    expect(creds.brand).toBe("Visa");
+    expect(fakeStripe.mints).toContain(cardId); // the mint happened, bound to THIS card
+    expect(linked.get(cardId)).toBeDefined();
+    // fiat_pay rides the SAME minted card (no second mint)
+    const r = parse(await client.callTool({ name: "fiat_pay", arguments: { amount: "1" } }));
+    expect(r.approved).toBe(true);
+    expect(fakeStripe.mints.filter((m) => m === cardId).length).toBe(1);
     await client.close();
+  });
+
+  test("mint impossible (no cardholder): typed no_fiat_card refusal on both tools", async () => {
+    const { secret } = await issue({ pay: { lifetime: { amount: "5" } } }, "unmintable");
+    fakeStripe.mintable = false;
+    try {
+      const client = await connect(`${fiatBase}/c/${secret}/mcp`);
+      const pay = await client.callTool({ name: "fiat_pay", arguments: { amount: "1" } });
+      expect(pay.isError).toBe(true);
+      expect(parse(pay).code).toBe("no_fiat_card");
+      const creds = await client.callTool({ name: "card_credentials", arguments: {} });
+      expect(creds.isError).toBe(true);
+      expect(parse(creds).code).toBe("no_fiat_card");
+      await client.close();
+    } finally {
+      fakeStripe.mintable = true;
+    }
   });
 });
 

@@ -59,7 +59,7 @@ export default function CardPage({ params }: { params: Promise<{ id: string }> }
     return (
       <main className="narrow" style={{ textAlign: "center" }}>
         <span style={{ color: "var(--body)", fontSize: 13 }}>
-          loading… {msg && <span className="err">{msg}</span>}
+          Loading… {msg && <span className="err">{msg}</span>}
         </span>
       </main>
     );
@@ -78,7 +78,7 @@ export default function CardPage({ params }: { params: Promise<{ id: string }> }
 
   return (
     <Cockpit
-      back={{ href: "/", label: "dashboard" }}
+      back={{ href: "/", label: "Dashboard" }}
       remit={remit}
       refresh={refresh}
       onLogout={logout}

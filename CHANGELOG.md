@@ -2,6 +2,29 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.11.0] - 2026-06-12
+
+Round four of the live refinement: the Title Case voice, the one-caption hero, a real Visa on every card face (every delegation mints its own test-mode card), and the dashboard going properly mobile, with the iPhone loading stall fixed at its roots. Shipped through a 46-agent review pass plus a scoped delta review (8 fixes applied).
+
+### Added
+
+- **A real Visa on every card**: every live card links a Stripe test-mode virtual Visa on first need, lazily at the first credential read or dashboard view, eagerly (fire-and-forget) at issuance and sub-card creation. The card face renders the real PAN, expiry and brand; the back carries the CVC beside the signature and a "Visa test mode" fact. New owner endpoint `GET /cards/:id/fiat` (Privy-scoped, degrades to `linked:false` on any Stripe failure); `card_credentials` and `fiat_pay` now mint on first use instead of refusing unlinked cards. The mint path is race-safe: in-flight dedup per card plus a resolve cache whose rebuilds preserve young entries (Stripe's card list lags fresh creates).
+- **Boot recovery**: a 12s watchdog on every pre-dashboard screen surfaces Reload / Sign Out and Start Over instead of an infinite spinner (re-arms per boot-gate transition); API calls carry session-token (10s) and request (20s) timeouts with an AbortController fallback for older WebKit; plain-HTTP origins get an explicit "open over HTTPS" notice, since Privy's wallet layer requires a secure context and otherwise crashes or hangs the page.
+- **Mobile, fully**: explicit viewport (edge-to-edge on notched phones), browser-chrome tint following the user's CHOSEN theme, 16px text controls on touch devices (eliminates iOS Safari's focus zoom), a phone-width layout pass (the deck shrinks to keep the + affordance on-canvas, the profile menu drops below the top bar right-aligned, horizontal overflow clipped), and `allowedDevOrigins` so LAN-IP dev access hydrates instead of sticking on the SSR shell.
+
+### Changed
+
+- **Title Case voice app-wide**: controls, labels, tabs and menus in Title Case; prose in sentence case; figure-continuation captions stay lowercase; the all-lowercase voice and the legacy consent-page caps are gone. Status words capitalize at display time.
+- **Hero density cut**: one figure, one gauge, one whisper caption ("of $25.00 this week · resets in 1d 08h"). The aggregate line, the remaining-label, the % pill and the three-fact statline all died; the wallet aggregate resurfaced in the profile menu; the tab counters were removed.
+- **Content swap, unified**: old and new content cross-fade in the same grid cell (no `mode="wait"` blank frame, no height jump), and card swipes use the same quiet rise as tab switches; the deck's own slide carries direction alone.
+- **Chrome de-pulsed**: the Base roundel replaces the pulsing network dot; active status wears a seal (filled core in a fine ring that draws once on mount), frozen a snowflake, dead a hollow ring; no looping pulses anywhere. The create affordance moved to the deck's right edge. "Edit Terms Yourself" unfolds with an animated height reveal.
+
+### Fixed
+
+- The iPhone "stuck on Loading…" stall, both roots: Next dev was blocking LAN-origin `/_next` resources (no hydration, no error), and on insecure origins Privy's render-time HTTPS requirement crashed the tree into the framework error screen. LAN dev now hydrates; insecure origins explain themselves.
+- `/cards/:id/fiat` degrades to `linked:false` instead of a 500 when the credential reveal fails mid-flight; a fresh Visa mint can no longer be duplicated by a foreign card's cache rebuild.
+- The card face holds quiet placeholder dots while credentials load, never flashing the hex pseudo-PAN before the Visa lands; malformed response bodies on 2xx surface as errors instead of returning null into callers.
+
 ## [0.10.0] - 2026-06-11
 
 The dashboard refined live, round by round: the centered card-deck hero, a real dark mode, a delete lane for dead cards, and a long polish pass over every floating surface. Shipped through a 3-reviewer pass (2 server-side fixes, 5 UI fixes applied).

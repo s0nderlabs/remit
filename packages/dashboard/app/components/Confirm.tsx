@@ -33,8 +33,8 @@ export function DangerModal({
   body,
   confirmLabel,
   busyNote,
-  busyHint = "on-chain authority takes a moment",
-  doneTitle = "done",
+  busyHint = "On-chain authority takes a moment",
+  doneTitle = "Done",
   doneNote,
   errorNote,
   onConfirm,
@@ -134,7 +134,7 @@ export function DangerModal({
                   <p>{body}</p>
                   <div className="cbtns">
                     <button className="mghost" onClick={onClose}>
-                      cancel
+                      Cancel
                     </button>
                     <button className="cdanger" onClick={onConfirm} data-testid={`${prefix}-confirm`}>
                       {confirmLabel}
@@ -158,7 +158,7 @@ export function DangerModal({
                   <p data-testid={`${prefix}-done`}>{doneNote}</p>
                   <div className="cbtns">
                     <button className="dbtn" onClick={onClose}>
-                      close
+                      Close
                     </button>
                   </div>
                 </motion.div>
@@ -169,10 +169,10 @@ export function DangerModal({
                   <p className="err">{errorNote}</p>
                   <div className="cbtns">
                     <button className="mghost" onClick={onClose}>
-                      close
+                      Close
                     </button>
                     <button className="cdanger" onClick={onConfirm}>
-                      try again
+                      Try Again
                     </button>
                   </div>
                 </motion.div>

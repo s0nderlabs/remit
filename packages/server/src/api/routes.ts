@@ -280,6 +280,8 @@ export function apiRoutes(deps: AppDeps, oauth: OAuthStore): Hono<{ Variables: {
       // consume only on SUCCESS: a signature that fails recovery can be retried with a
       // corrected one until the TTL expires (the DB primary key backstops any replay)
       pending.delete(body.prepare_id);
+      // eager mint, fire-and-forget: the delegation is a two-rail card from birth
+      if (deps.stripe) void deps.stripe.ensureCardForRemitCard(issued.cardId).catch(() => {});
       return { card_id: issued.cardId, card_url: cardUrl(issued.secret), terms: issued.terms };
     }),
   );
@@ -315,6 +317,7 @@ export function apiRoutes(deps: AppDeps, oauth: OAuthStore): Hono<{ Variables: {
         { store: deps.store, userSigner: deps.userSigner },
         { userId, name: body.name, terms: body.terms },
       );
+      if (deps.stripe) void deps.stripe.ensureCardForRemitCard(issued.cardId).catch(() => {});
       return { card_id: issued.cardId, card_url: cardUrl(issued.secret), terms: issued.terms };
     }),
   );
@@ -369,6 +372,42 @@ export function apiRoutes(deps: AppDeps, oauth: OAuthStore): Hono<{ Variables: {
       const card = ownedCard(c, c.req.param("id"));
       const secret = await rotateCardSecret(deps.store, card.id);
       return { card_url: cardUrl(secret) };
+    }),
+  );
+
+  // The linked test-mode Visa for the card OWNER's dashboard: the card face
+  // renders the real credentials. Same data the card_credentials MCP tool
+  // already returns to the agent holding this card; test mode permits reveal.
+  // Live cards MINT on first need (every delegation IS a card); dead cards
+  // only resolve an existing link. A Stripe failure degrades to linked:false.
+  app.get("/cards/:id/fiat", (c) =>
+    handle(c, async () => {
+      const card = ownedCard(c, c.req.param("id"));
+      if (!deps.stripe) return { linked: false };
+      const status = cardState(deps.store, card.id, now())?.status;
+      const alive = status === "active" || status === "frozen";
+      // the WHOLE Stripe surface degrades: resolve/mint AND reveal · a 429 or
+      // a card deleted between resolve and reveal must read as linked:false,
+      // never a 500 on the dashboard
+      try {
+        const ic = await (alive
+          ? deps.stripe.ensureCardForRemitCard(card.id)
+          : deps.stripe.findCardForRemitCard(card.id));
+        if (!ic) return { linked: false };
+        const det = await deps.stripe.getCardDetails(ic, { reveal: true });
+        return {
+          linked: true,
+          brand: det.brand,
+          last4: det.last4,
+          exp_month: det.exp_month,
+          exp_year: det.exp_year,
+          number: det.number ?? null,
+          cvc: det.cvc ?? null,
+          cardholder_name: det.cardholder_name,
+        };
+      } catch {
+        return { linked: false };
+      }
     }),
   );
 

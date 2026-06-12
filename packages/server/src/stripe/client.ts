@@ -58,6 +58,11 @@ export class StripeClient {
   private readonly fetchFn: FetchFn;
   /** remit_card_id -> { Issuing card id, listed-at } (re-list on miss or staleness) */
   private cardIdCache = new Map<string, { icId: string; at: number }>();
+  /** the account's active cardholder, discovered once per process */
+  private cardholderId: string | null = null;
+  /** in-flight mints per remit card · a dashboard poll racing an agent's
+   * credential read must not mint two Visas for one delegation */
+  private ensuring = new Map<string, Promise<string | null>>();
 
   constructor(key: string, fetchFn: FetchFn = (url, init) => globalThis.fetch(url, init)) {
     this.key = key;
@@ -114,19 +119,72 @@ export class StripeClient {
   }
 
   /** Resolve the Issuing card carrying metadata.remit_card_id = remitCardId.
-   * Hits are cached 5 min; a miss re-lists once (a just-created card must be findable). */
+   * Hits are cached (short TTL); a miss re-lists once (a just-created card must
+   * be findable). The rebuild PRESERVES young entries the list doesn't show yet:
+   * a just-minted card lags Stripe's list (eventual consistency), and a rebuild
+   * triggered by a DIFFERENT card's miss must not evict the fresh prime · that
+   * window minted duplicate Visas. Entries older than the TTL still fall out,
+   * so a re-pointed mapping stays stale at most CARD_CACHE_TTL_MS (the same
+   * budget the TTL always allowed). */
   async findCardForRemitCard(remitCardId: string): Promise<string | null> {
     const cached = this.cardIdCache.get(remitCardId);
     if (cached && Date.now() - cached.at < CARD_CACHE_TTL_MS) return cached.icId;
     const cards = await this.listActiveCards();
     const now = Date.now();
-    // full rebuild: entries for re-pointed or deactivated cards must not survive a re-list
-    this.cardIdCache.clear();
+    const rebuilt = new Map<string, { icId: string; at: number }>();
+    for (const [rid, v] of this.cardIdCache) {
+      if (now - v.at < CARD_CACHE_TTL_MS) rebuilt.set(rid, v);
+    }
     for (const card of cards) {
       const rid = card.metadata?.remit_card_id;
-      if (rid) this.cardIdCache.set(rid, { icId: card.id, at: now });
+      if (rid) rebuilt.set(rid, { icId: card.id, at: now });
     }
+    this.cardIdCache = rebuilt;
     return this.cardIdCache.get(remitCardId)?.icId ?? null;
+  }
+
+  private async findCardholderId(): Promise<string | null> {
+    if (this.cardholderId) return this.cardholderId;
+    const params = new URLSearchParams();
+    params.set("status", "active");
+    params.set("limit", "1");
+    const res = await this.request<{ data?: Array<{ id: string }> }>("GET", "/v1/issuing/cardholders", params);
+    this.cardholderId = res.data?.[0]?.id ?? null;
+    return this.cardholderId;
+  }
+
+  /** Mint a virtual test Visa bound to a remit card via metadata.remit_card_id. */
+  private async createCardForRemitCard(remitCardId: string): Promise<string | null> {
+    const cardholder = await this.findCardholderId();
+    if (!cardholder) return null; // account has no cardholder · nothing to mint against
+    const params = new URLSearchParams();
+    params.set("cardholder", cardholder);
+    params.set("currency", "usd");
+    params.set("type", "virtual");
+    params.set("status", "active");
+    params.set("metadata[remit_card_id]", remitCardId);
+    const card = await this.request<RawIssuingCard>("POST", "/v1/issuing/cards", params);
+    this.cardIdCache.set(remitCardId, { icId: card.id, at: Date.now() });
+    return card.id;
+  }
+
+  /** Every delegation IS a card: resolve the linked Visa, minting one on first
+   * need. Returns null only when the account can't mint (no cardholder).
+   * The WHOLE find-then-create runs inside the deduped promise · no await sits
+   * between the inflight check and the set, so overlapping callers can never
+   * both reach the create. */
+  async ensureCardForRemitCard(remitCardId: string): Promise<string | null> {
+    const inflight = this.ensuring.get(remitCardId);
+    if (inflight) return inflight;
+    const p = (async () => {
+      const existing = await this.findCardForRemitCard(remitCardId);
+      if (existing) return existing;
+      return this.createCardForRemitCard(remitCardId);
+    })().finally(() => {
+      this.ensuring.delete(remitCardId);
+    });
+    this.ensuring.set(remitCardId, p);
+    return p;
   }
 
   /** reveal=true expands number + cvc (test mode allows this; live mode would refuse). */

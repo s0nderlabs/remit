@@ -282,3 +282,115 @@ describe("fiat charges + settlement mode", () => {
     expect(recentFiatDecision("iauth_never_seen")).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ensureCardForRemitCard: every delegation IS a card · the client mints a
+// virtual test Visa on first need, reuses an existing link, and never mints
+// twice for one remit card (in-flight dedup).
+// ---------------------------------------------------------------------------
+
+import { StripeClient } from "../src/stripe/client";
+
+type MockState = {
+  cards: Record<string, unknown>[];
+  cardholders: { id: string }[];
+  posts: string[];
+  /** when set, GETs list THIS instead of state.cards · models Stripe's
+   * eventual consistency (a just-created card lags the list) */
+  listed?: Record<string, unknown>[];
+};
+
+function mockStripeClient(state: MockState): StripeClient {
+  return new StripeClient("sk_test_mock", async (url, init) => {
+    const u = new URL(url);
+    const method = init?.method ?? "GET";
+    if (u.pathname === "/v1/issuing/cardholders") {
+      return Response.json({ data: state.cardholders });
+    }
+    if (u.pathname === "/v1/issuing/cards" && method === "GET") {
+      return Response.json({ data: state.listed ?? state.cards });
+    }
+    if (u.pathname === "/v1/issuing/cards" && method === "POST") {
+      state.posts.push(String(init?.body ?? ""));
+      const body = new URLSearchParams(String(init?.body ?? ""));
+      // simulate a tick of API latency so concurrent ensures actually overlap
+      await new Promise((r) => setTimeout(r, 10));
+      const card = {
+        id: `ic_mock_${state.posts.length}`,
+        last4: "0013",
+        exp_month: 4,
+        exp_year: 2030,
+        brand: "Visa",
+        status: "active",
+        metadata: { remit_card_id: body.get("metadata[remit_card_id]") },
+      };
+      state.cards.push(card);
+      return Response.json(card);
+    }
+    return new Response(JSON.stringify({ error: { message: `unmocked ${method} ${u.pathname}` } }), { status: 404 });
+  });
+}
+
+describe("ensureCardForRemitCard (auto-mint)", () => {
+  test("mints a Visa bound to the remit card when none is linked", async () => {
+    const state: MockState = { cards: [], cardholders: [{ id: "ich_mock" }], posts: [] };
+    const client = mockStripeClient(state);
+    const ic = await client.ensureCardForRemitCard("card-aaa");
+    expect(ic).toBe("ic_mock_1");
+    expect(state.posts.length).toBe(1);
+    expect(state.posts[0]).toContain("cardholder=ich_mock");
+    expect(decodeURIComponent(state.posts[0])).toContain("metadata[remit_card_id]=card-aaa");
+    // the mint primes the cache: a follow-up resolve does not re-list or re-mint
+    expect(await client.findCardForRemitCard("card-aaa")).toBe("ic_mock_1");
+    expect(state.posts.length).toBe(1);
+  });
+
+  test("reuses an existing linked Visa without minting", async () => {
+    const state: MockState = {
+      cards: [{ id: "ic_existing", last4: "9999", exp_month: 1, exp_year: 2030, brand: "Visa", status: "active", metadata: { remit_card_id: "card-bbb" } }],
+      cardholders: [{ id: "ich_mock" }],
+      posts: [],
+    };
+    const client = mockStripeClient(state);
+    expect(await client.ensureCardForRemitCard("card-bbb")).toBe("ic_existing");
+    expect(state.posts.length).toBe(0);
+  });
+
+  test("concurrent ensures for one remit card mint exactly once", async () => {
+    const state: MockState = { cards: [], cardholders: [{ id: "ich_mock" }], posts: [] };
+    const client = mockStripeClient(state);
+    const [a, b] = await Promise.all([
+      client.ensureCardForRemitCard("card-ccc"),
+      client.ensureCardForRemitCard("card-ccc"),
+    ]);
+    expect(a).toBe(b);
+    expect(state.posts.length).toBe(1);
+  });
+
+  test("no cardholder on the account: returns null, never throws", async () => {
+    const state: MockState = { cards: [], cardholders: [], posts: [] };
+    const client = mockStripeClient(state);
+    expect(await client.ensureCardForRemitCard("card-ddd")).toBeNull();
+    expect(state.posts.length).toBe(0);
+  });
+
+  test("a fresh mint survives a FOREIGN card's cache rebuild while Stripe's list lags", async () => {
+    // the list shows only a pre-existing foreign card · a just-minted card
+    // won't appear in it yet (eventual consistency)
+    const state: MockState = {
+      cards: [],
+      cardholders: [{ id: "ich_mock" }],
+      posts: [],
+      listed: [
+        { id: "ic_foreign", last4: "1111", exp_month: 1, exp_year: 2030, brand: "Visa", status: "active", metadata: { remit_card_id: "card-foreign" } },
+      ],
+    };
+    const client = mockStripeClient(state);
+    expect(await client.ensureCardForRemitCard("card-eee")).toBe("ic_mock_1");
+    // an UNRELATED resolve misses the cache and forces a full rebuild from the
+    // lagging list · the young prime for card-eee must survive it
+    expect(await client.findCardForRemitCard("card-never-linked")).toBeNull();
+    expect(await client.ensureCardForRemitCard("card-eee")).toBe("ic_mock_1");
+    expect(state.posts.length).toBe(1); // ONE Visa, no duplicate mint
+  });
+});

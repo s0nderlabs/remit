@@ -1,22 +1,23 @@
 "use client";
 
-// /connect — the OAuth consent page (THE card picker). The API's /authorize endpoint
+// /connect: the OAuth consent page (THE card picker). The API's /authorize endpoint
 // 302s the agent's browser here with ?request=<id>; the user signs in with the
 // EXISTING Privy session, picks WHICH card to grant, and we bounce back to the
 // client's redirect_uri with the authorization code. The agent ends up holding a
-// short-lived card-scoped token — never a raw card secret.
+// short-lived card-scoped token, never a raw card secret.
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { api, type CardState } from "@/lib/api";
 import { CopyButton } from "../components/Authority";
+import { capWord } from "../components/ui";
 import { useRemit } from "../useRemit";
 
 export default function ConnectPage() {
   return (
     <main className="narrow">
-      <Suspense fallback={<div className="mono">loading…</div>}>
+      <Suspense fallback={<div className="mono">Loading…</div>}>
         <Consent />
       </Suspense>
     </main>
@@ -160,21 +161,21 @@ function Consent() {
   }, [requestId]);
 
   if (!requestId) {
-    return <div className="panel mono">missing ?request parameter, start the connection from your agent.</div>;
+    return <div className="panel mono">Missing ?request parameter, start the connection from your agent.</div>;
   }
   if (granted) {
     const openclaw = /openclaw/i.test(granted.client ?? "");
     return (
       <div className="panel" data-testid="granted">
-        <h2>card granted</h2>
+        <h2>Card Granted</h2>
         {granted.code ? (
           <>
             <p className="mono" style={{ color: "#666" }}>
               {openclaw
-                ? "your agent is waiting in the terminal · give it this code:"
+                ? "Your agent is waiting in the terminal · give it this code:"
                 : granted.loopback
-                  ? "press continue if your agent is listening locally · or give it this code if it asked for one:"
-                  : "returning you to the app · if it asks for a code, use this one:"}
+                  ? "Press Continue if your agent is listening locally · or give it this code if it asked for one:"
+                  : "Returning you to the app · if it asks for a code, use this one:"}
             </p>
             <p
               className="mono"
@@ -194,38 +195,38 @@ function Consent() {
               {granted.code}
             </p>
             <div className="row" style={{ gap: 8 }}>
-              <CopyButton text={granted.code} label="copy code" />
+              <CopyButton text={granted.code} label="Copy Code" />
               <button onClick={() => (window.location.href = granted.redirectTo)} data-testid="continue">
-                continue to app
+                Continue to App
               </button>
             </div>
             <p className="mono" style={{ color: "#666", fontSize: 12, marginTop: 8 }}>
               {openclaw
-                ? <>finish with <b>openclaw mcp login &lt;server&gt; --code &lt;code&gt;</b> · the code expires in ~2 minutes</>
-                : <>terminal clients take it like <b>… login &lt;server&gt; --code &lt;code&gt;</b> · expires in ~2 minutes · safe to close this tab once your agent confirms</>}
+                ? <>Finish with <b>openclaw mcp login &lt;server&gt; --code &lt;code&gt;</b> · the code expires in ~2 minutes</>
+                : <>Terminal clients take it like <b>… login &lt;server&gt; --code &lt;code&gt;</b> · expires in ~2 minutes · safe to close this tab once your agent confirms</>}
             </p>
           </>
         ) : (
           <p className="mono" style={{ color: "#666" }}>
-            returning you to the app…{" "}
+            Returning you to the app…{" "}
             <button onClick={() => (window.location.href = granted.redirectTo)} data-testid="continue">
-              continue
+              Continue
             </button>
           </p>
         )}
       </div>
     );
   }
-  if (!ready) return <div className="mono">loading…</div>;
+  if (!ready) return <div className="mono">Loading…</div>;
   if (!authenticated) {
     return (
       <div className="panel" style={{ textAlign: "center", padding: 40 }}>
-        <h2>connect an agent to remit</h2>
+        <h2>Connect an Agent to remit</h2>
         <p className="mono" style={{ color: "#666" }}>
-          an agent is asking for spending authority · sign in to pick which card it gets
+          An agent is asking for spending authority · sign in to pick which card it gets
         </p>
         <button className="primary" onClick={login} data-testid="login">
-          sign in
+          Sign In
         </button>
       </div>
     );
@@ -235,17 +236,17 @@ function Consent() {
       <div className="panel mono">
         <p className="err">{err}</p>
         <p>
-          the request may have expired (the agent can retry), or your account isn&apos;t set up yet:{" "}
+          The request may have expired (the agent can retry), or your account isn&apos;t set up yet:{" "}
           <Link href="/">open the dashboard</Link> first.
         </p>
       </div>
     );
   }
-  if (!info || !cards) return <div className="mono">loading request…</div>;
+  if (!info || !cards) return <div className="mono">Loading request…</div>;
 
   return (
     <div className="panel" data-testid="consent">
-      <h2>grant a card</h2>
+      <h2>Grant a Card</h2>
       <p className="mono" style={{ color: "#666" }}>
         An app calling itself <b>{info.client_name ?? "an MCP client"}</b> is requesting access. If you
         approve, the authorization will be sent to:
@@ -259,7 +260,7 @@ function Consent() {
       </p>
       {cards.length === 0 ? (
         <p className="mono">
-          no live cards to grant. <Link href="/">issue one on the dashboard</Link>, then retry from your agent.
+          No live cards to grant. <Link href="/">Issue one on the dashboard</Link>, then retry from your agent.
         </p>
       ) : (
         <>
@@ -288,7 +289,7 @@ function Consent() {
                 />
                 <span style={{ flex: 1 }}>
                   <b>{c.name}</b>{" "}
-                  <span className={`chip ${c.status}`}>{c.status}</span>
+                  <span className={`chip ${c.status}`}>{capWord(c.status)}</span>
                   <br />
                   <span style={{ color: "#666", fontSize: 12 }}>
                     {c.remaining_this_period !== null && `${c.remaining_this_period} USDC left this period`}
@@ -301,10 +302,10 @@ function Consent() {
           {err && <p className="err">{err}</p>}
           <div className="row" style={{ gap: 8 }}>
             <button className="primary" onClick={approve} disabled={!picked || phase !== "idle"} data-testid="approve">
-              {phase === "idle" ? "grant this card" : phase === "submitting" ? "granting…" : "returning to your agent…"}
+              {phase === "idle" ? "Grant This Card" : phase === "submitting" ? "Granting…" : "Returning to your agent…"}
             </button>
             <button onClick={deny} disabled={phase !== "idle"} data-testid="deny">
-              deny
+              Deny
             </button>
           </div>
         </>

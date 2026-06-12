@@ -70,13 +70,13 @@ export function TermsGrid({ card, agentAddress }: { card: CardState; agentAddres
   const t = card.terms;
   const ct = t.contract;
   const expires = card.expires_at
-    ? `${new Date(card.expires_at * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }).toLowerCase()}${
+    ? `${new Date(card.expires_at * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}${
         !isDead(card.status) && card.expires_at * 1000 > Date.now()
           ? ` · ${Math.max(1, Math.ceil((card.expires_at * 1000 - Date.now()) / 86400000))}d left`
           : ""
       }`
-    : "never";
-  const rails = [t.pay ? "x402 + fiat" : null, ct ? "execute" : null].filter(Boolean).join(" · ") || "none";
+    : "Never";
+  const rails = [t.pay ? "x402 + Fiat" : null, ct ? "Execute" : null].filter(Boolean).join(" · ") || "None";
 
   const row = (label: string, value: React.ReactNode, opts?: { title?: string; mono?: boolean }) => (
     <div className="trow" title={opts?.title}>
@@ -88,16 +88,16 @@ export function TermsGrid({ card, agentAddress }: { card: CardState; agentAddres
   return (
     <div className="termsheet">
       <div className="tcol">
-        {row("rails", rails)}
-        {t.pay && row("per-charge cap", t.perTxMax ? `$${t.perTxMax}` : "uncapped")}
+        {row("Rails", rails)}
+        {t.pay && row("Per-Charge Cap", t.perTxMax ? `$${t.perTxMax}` : "Uncapped")}
         {t.pay &&
-          row("merchants", t.merchants?.length ? `${t.merchants.length} locked` : "any merchant", {
+          row("Merchants", t.merchants?.length ? `${t.merchants.length} locked` : "Any merchant", {
             title: t.merchants?.join("\n"),
           })}
-        {t.pay?.lifetime && row("lifetime cap", `$${t.pay.lifetime.amount}`)}
+        {t.pay?.lifetime && row("Lifetime Cap", `$${t.pay.lifetime.amount}`)}
         {ct &&
           row(
-            "contracts",
+            "Contracts",
             <>
               {shortHex(ct.targets[0])}
               {ct.targets.length > 1 && <span className="w"> +{ct.targets.length - 1}</span>}
@@ -106,7 +106,7 @@ export function TermsGrid({ card, agentAddress }: { card: CardState; agentAddres
           )}
         {ct &&
           row(
-            "methods",
+            "Methods",
             <>
               {methodName(ct.selectors[0])}
               {ct.selectors.length > 1 && <span className="w"> +{ct.selectors.length - 1}</span>}
@@ -115,28 +115,28 @@ export function TermsGrid({ card, agentAddress }: { card: CardState; agentAddres
           )}
         {ct &&
           row(
-            "token allowance",
+            "Token Allowance",
             ct.tokens?.length ? (
               <>
                 {ct.tokens.length}
                 <span className="w"> allowed</span>
               </>
             ) : (
-              "any in scope"
+              "Any in scope"
             ),
             { title: ct.tokens?.join("\n") },
           )}
         {ct &&
           row(
-            "per-trade max",
-            ct.perTradeMax ? `$${ct.perTradeMax}${perTradeEnforces(ct) ? "" : " · dormant (no usdc in scope)"}` : "uncapped",
+            "Per-Trade Max",
+            ct.perTradeMax ? `$${ct.perTradeMax}${perTradeEnforces(ct) ? "" : " · dormant (no USDC in scope)"}` : "Uncapped",
           )}
       </div>
       <div className="tcol">
-        {row("expires", expires)}
-        {row("uses left", card.uses_remaining !== null ? card.uses_remaining : "unlimited")}
-        {row("sub-cards", t.subcards === false ? "not allowed" : "allowed")}
-        {row("delegate", agentAddress ? shortHex(agentAddress) : "·", { title: agentAddress, mono: true })}
+        {row("Expires", expires)}
+        {row("Uses Left", card.uses_remaining !== null ? card.uses_remaining : "Unlimited")}
+        {row("Sub-Cards", t.subcards === false ? "Not allowed" : "Allowed")}
+        {row("Delegate", agentAddress ? shortHex(agentAddress) : "·", { title: agentAddress, mono: true })}
       </div>
     </div>
   );
@@ -201,27 +201,27 @@ export function RevokeButton({
         disabled={!revocable || (!isSub && !embeddedReady)}
         onClick={() => setOpen(true)}
         data-testid="revoke"
-        title={isSub ? "revoke · server-side kill, instant" : "revoke · on-chain disableDelegation, signed by your embedded wallet"}
+        title={isSub ? "Revoke · server-side kill, instant" : "Revoke · on-chain disableDelegation, signed by your embedded wallet"}
       >
         <IconRevoke size={13} />
-        revoke
+        Revoke
       </button>
       <DangerModal
         open={open}
         phase={phase}
         prefix="revoke"
-        title={isSub ? "revoke this sub-card?" : "revoke this card?"}
+        title={isSub ? "Revoke this sub-card?" : "Revoke this card?"}
         body={
           isSub
-            ? "the sub-card and every card carved beneath it die instantly. the agent holding it loses authority for good."
-            : "permanently revokes the delegation on-chain. every sub-card carved from it dies with it: the whole subtree, one transaction."
+            ? "The sub-card and every card carved beneath it die instantly. The agent holding it loses authority for good."
+            : "Permanently revokes the delegation on-chain. Every sub-card carved from it dies with it: the whole subtree, one transaction."
         }
-        confirmLabel="yes, revoke"
-        busyNote={stage === "signing" ? "signing with your wallet…" : isSub ? "killing server-side…" : "submitting on-chain…"}
-        doneTitle="card revoked"
+        confirmLabel="Yes, Revoke"
+        busyNote={stage === "signing" ? "Signing with your wallet…" : isSub ? "Killing server-side…" : "Submitting on-chain…"}
+        doneTitle="Card Revoked"
         doneNote={
           <>
-            revoked ✓ the authority is dead.{" "}
+            Revoked ✓ The authority is dead.{" "}
             {tx && (
               <a href={`https://basescan.org/tx/${tx}`} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
                 {shortHex(tx, 10, 0)}
@@ -229,7 +229,7 @@ export function RevokeButton({
             )}
           </>
         }
-        errorNote={err ? `revoke failed: ${err}` : undefined}
+        errorNote={err ? `Revoke failed: ${err}` : undefined}
         onConfirm={go}
         onClose={() => {
           setOpen(false);
@@ -274,27 +274,27 @@ export function DeleteButton({
         className="vpill danger stay"
         onClick={() => setOpen(true)}
         data-testid="delete-card"
-        title="remove this dead card from the dashboard"
+        title="Remove this dead card from the dashboard"
       >
         <IconTrash />
-        delete card
+        Delete Card
       </button>
       <DangerModal
         open={open}
         phase={phase}
         prefix="delete"
-        title="delete this card?"
+        title="Delete this card?"
         body={
           hasKids
-            ? "the authority is already dead on-chain. this removes the card, its sub-cards and their charge history from your dashboard for good."
-            : "the authority is already dead on-chain. this removes the card and its charge history from your dashboard for good."
+            ? "The authority is already dead on-chain. This removes the card, its sub-cards and their charge history from your dashboard for good."
+            : "The authority is already dead on-chain. This removes the card and its charge history from your dashboard for good."
         }
-        confirmLabel="yes, delete"
-        busyNote="removing…"
-        busyHint="bookkeeping only · nothing to wait for on-chain"
-        doneTitle="card deleted"
-        doneNote="gone. the books are clean."
-        errorNote={err ? `delete failed: ${err}` : undefined}
+        confirmLabel="Yes, Delete"
+        busyNote="Removing…"
+        busyHint="Bookkeeping only · nothing to wait for on-chain"
+        doneTitle="Card Deleted"
+        doneNote="Gone. The books are clean."
+        errorNote={err ? `Delete failed: ${err}` : undefined}
         onConfirm={go}
         onClose={() => {
           setOpen(false);
@@ -330,7 +330,7 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
         setTimeout(() => setCopied(false), 1500);
       }}
     >
-      {copied ? "copied ✓" : label}
+      {copied ? "Copied ✓" : label}
     </button>
   );
 }
@@ -371,8 +371,8 @@ export function UrlBox({ url, testid }: { url: string; testid?: string }) {
       </span>
       <button
         className={`ovcopy${copied ? " done" : ""}`}
-        aria-label="copy url"
-        title="copy url"
+        aria-label="Copy URL"
+        title="Copy URL"
         onClick={async () => {
           await navigator.clipboard.writeText(url);
           setCopied(true);
@@ -409,18 +409,18 @@ export function ConnectChips({ url, cardName }: { url: string; cardName: string 
     setTimeout(() => setDone((k) => (k === key ? null : k)), 1500);
   };
   const harnesses: { key: string; label: string; title: string; glyph: "copy" | "open"; act: () => void }[] = [
-    { key: "cc", label: "claude code", title: "copy the claude mcp add command", glyph: "copy", act: () => void copy("cc", cli)() },
-    { key: "cai", label: "claude.ai", title: "open a prefilled connector dialog", glyph: "open", act: () => void window.open(claudeAiLink, "_blank", "noopener") },
-    { key: "cdx", label: "codex", title: "copy the codex mcp add command", glyph: "copy", act: () => void copy("cdx", codex)() },
-    { key: "cur", label: "cursor", title: "open cursor's install prompt", glyph: "open", act: () => void (window.location.href = cursorLink) },
-    { key: "vsc", label: "vs code", title: "open vs code's install prompt", glyph: "open", act: () => void (window.location.href = vscodeLink) },
-    { key: "ocl", label: "openclaw", title: "copy the openclaw mcp add command", glyph: "copy", act: () => void copy("ocl", openclaw)() },
-    { key: "json", label: "json", title: "copy mcpServers json for any other client", glyph: "copy", act: () => void copy("json", json)() },
+    { key: "cc", label: "Claude Code", title: "Copy the claude mcp add command", glyph: "copy", act: () => void copy("cc", cli)() },
+    { key: "cai", label: "claude.ai", title: "Open a prefilled connector dialog", glyph: "open", act: () => void window.open(claudeAiLink, "_blank", "noopener") },
+    { key: "cdx", label: "Codex", title: "Copy the codex mcp add command", glyph: "copy", act: () => void copy("cdx", codex)() },
+    { key: "cur", label: "Cursor", title: "Open Cursor's install prompt", glyph: "open", act: () => void (window.location.href = cursorLink) },
+    { key: "vsc", label: "VS Code", title: "Open VS Code's install prompt", glyph: "open", act: () => void (window.location.href = vscodeLink) },
+    { key: "ocl", label: "OpenClaw", title: "Copy the openclaw mcp add command", glyph: "copy", act: () => void copy("ocl", openclaw)() },
+    { key: "json", label: "JSON", title: "Copy mcpServers JSON for any other client", glyph: "copy", act: () => void copy("json", json)() },
   ];
 
   return (
     <div data-testid="connect-panel">
-      <div className="hlabel">add to your agent</div>
+      <div className="hlabel">Add to Your Agent</div>
       <div className="hgrid">
         {harnesses.map((h) => (
           <button key={h.key} className={`hrow${done === h.key ? " done" : ""}`} title={h.title} onClick={h.act}>
@@ -429,7 +429,7 @@ export function ConnectChips({ url, cardName }: { url: string; cardName: string 
           </button>
         ))}
       </div>
-      <p className="bchint">an arrow opens that harness prefilled · the rest copy an install command (json fits any other client)</p>
+      <p className="bchint">An arrow opens that harness prefilled · the rest copy an install command (JSON fits any other client)</p>
     </div>
   );
 }

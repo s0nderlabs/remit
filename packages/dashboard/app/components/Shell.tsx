@@ -31,6 +31,7 @@ export function Cockpit({
   onLogout,
   address,
   nukeable = false,
+  aggregate,
   children,
 }: {
   back?: { href: string; label: string };
@@ -39,6 +40,7 @@ export function Cockpit({
   onLogout?: () => void;
   address?: string;
   nukeable?: boolean; // wallet has live cards: the nuke verb shows in the avatar menu
+  aggregate?: string; // the wallet-level fact line ("2 live cards · $30.00 / wk delegated")
   children: React.ReactNode;
 }) {
   return (
@@ -55,12 +57,22 @@ export function Cockpit({
           </Link>
         )}
         <div className="railfoot">
-          <span className="net" title="base · mainnet">
-            <b />
-            <i>base</i>
+          {/* the Base mark, at rest · no pulse: the network is a fact, not an alarm */}
+          <span className="net" title="Base · Mainnet" aria-label="Base · Mainnet">
+            <svg viewBox="0 0 16 16" aria-hidden>
+              <circle cx="8" cy="8" r="7" fill="currentColor" />
+              <rect x="1" y="7.2" width="8.6" height="1.6" fill="var(--page)" />
+            </svg>
           </span>
           <ThemeToggle />
-          <ProfileMenu address={address} onLogout={onLogout} remit={remit} refresh={refresh} nukeable={nukeable} />
+          <ProfileMenu
+            address={address}
+            onLogout={onLogout}
+            remit={remit}
+            refresh={refresh}
+            nukeable={nukeable}
+            aggregate={aggregate}
+          />
         </div>
       </aside>
       <div className="maincol">{children}</div>
@@ -77,12 +89,14 @@ function ProfileMenu({
   remit,
   refresh,
   nukeable,
+  aggregate,
 }: {
   address?: string;
   onLogout?: () => void;
   remit: Remit;
   refresh: () => void | Promise<void>;
   nukeable: boolean;
+  aggregate?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [nukeOpen, setNukeOpen] = useState(false);
@@ -90,7 +104,7 @@ function ProfileMenu({
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const btnRef = useRef<HTMLButtonElement>(null);
-  const [anchor, setAnchor] = useState<{ left: number; bottom: number } | null>(null);
+  const [anchor, setAnchor] = useState<React.CSSProperties | null>(null);
   // the anchor is captured at open; a resize would detach the menu from the avatar
   useEffect(() => {
     if (!open) return;
@@ -101,13 +115,20 @@ function ProfileMenu({
   const toggle = () => {
     if (!open && btnRef.current) {
       const r = btnRef.current.getBoundingClientRect();
-      setAnchor({ left: r.right + 14, bottom: window.innerHeight - r.bottom - 6 });
+      // wide layout: the rail anchor (menu opens rightward, pinned to the avatar's
+      // bottom). Top-bar layout (<1100px): the menu drops BELOW the avatar,
+      // right-aligned · the rail anchor would put it off-canvas.
+      setAnchor(
+        window.innerWidth < 1100
+          ? { right: 12, top: r.bottom + 10, transformOrigin: "right top" }
+          : { left: r.right + 14, bottom: window.innerHeight - r.bottom - 6, transformOrigin: "left bottom" },
+      );
     }
     setOpen((v) => !v);
   };
   return (
     <div className="profile">
-      <button ref={btnRef} className="avatarbtn" onClick={toggle} aria-label="account" data-testid="profile">
+      <button ref={btnRef} className="avatarbtn" onClick={toggle} aria-label="Account" data-testid="profile">
         <span className="avatar" />
       </button>
       {mounted &&
@@ -121,11 +142,14 @@ function ProfileMenu({
                   initial={{ opacity: 0, x: -8, scale: 0.97 }}
                   animate={{ opacity: 1, x: 0, scale: 1, transition: { type: "spring", stiffness: 480, damping: 34 } }}
                   exit={{ opacity: 0, x: -6, scale: 0.98, transition: { duration: 0.12 } }}
-                  style={{ transformOrigin: "left bottom", left: anchor.left, bottom: anchor.bottom }}
+                  style={anchor}
                 >
                   <div className="prowho">
                     <span className="avatar" />
-                    <span className="em">{address ? shortHex(address, 6, 4) : ""}</span>
+                    <span className="prowhocol">
+                      <span className="em">{address ? shortHex(address, 6, 4) : ""}</span>
+                      {aggregate && <span className="proagg">{aggregate}</span>}
+                    </span>
                   </div>
                   {onLogout && (
                     <button
@@ -136,7 +160,7 @@ function ProfileMenu({
                       }}
                       data-testid="logout"
                     >
-                      sign out
+                      Sign Out
                     </button>
                   )}
                   {nukeable && (
@@ -150,9 +174,9 @@ function ProfileMenu({
                         }}
                         data-testid="nuke"
                       >
-                        nuke all cards
+                        Nuke All Cards
                       </button>
-                      <p className="pronote">one on-chain tx revokes every card + sub-card this wallet ever issued</p>
+                      <p className="pronote">One on-chain tx revokes every card and sub-card this wallet ever issued</p>
                     </div>
                   )}
                 </motion.div>
@@ -209,14 +233,14 @@ function NukeModal({
       open={open}
       phase={phase}
       prefix="nuke"
-      title="nuke every card?"
-      body="one on-chain transaction revokes every card and sub-card this wallet ever issued. agents holding them lose all authority, permanently."
-      confirmLabel="yes, nuke everything"
-      busyNote={stage === "signing" ? "signing with your wallet…" : "one tx, killing the whole tree…"}
-      doneTitle="every card is dead"
+      title="Nuke every card?"
+      body="One on-chain transaction revokes every card and sub-card this wallet ever issued. Agents holding them lose all authority, permanently."
+      confirmLabel="Yes, Nuke Everything"
+      busyNote={stage === "signing" ? "Signing with your wallet…" : "One tx, killing the whole tree…"}
+      doneTitle="Every card is dead"
       doneNote={
         <>
-          nuked ✓ the whole tree is revoked on-chain.{" "}
+          Nuked ✓ the whole tree is revoked on-chain.{" "}
           {tx && (
             <a href={`https://basescan.org/tx/${tx}`} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
               {shortHex(tx, 10, 0)}
@@ -224,7 +248,7 @@ function NukeModal({
           )}
         </>
       }
-      errorNote={err ? `nuke failed: ${err}` : undefined}
+      errorNote={err ? `Nuke failed: ${err}` : undefined}
       onConfirm={go}
       onClose={() => {
         onClose();
