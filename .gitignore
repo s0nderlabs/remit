@@ -27,3 +27,7 @@ PLAN.md
 .env*.local
 *.local.ts
 .dev-drill/
+
+# dev-only workflow scripts + local review artifacts
+packages/*/scripts/*.workflow.js
+.claude/reviews/

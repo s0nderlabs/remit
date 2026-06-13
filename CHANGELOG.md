@@ -2,6 +2,20 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.15.0] - 2026-06-13
+
+Compiler robustness pass. The natural-language card compiler now understands Aave (and any combination of Aave plus Uniswap in one card), stopped inventing or dropping limits, and rides out Venice's occasional latency spikes instead of timing out on them. The compiler model is now `zai-org-glm-5` (GLM-5), chosen from a head-to-head benchmark of intelligence-peer models on the real compile task.
+
+### Added
+
+- **Aave and multi-protocol cards from natural language.** "Supply USDC to Aave", "lend USDC on Aave", and combined intents like "swap on Uniswap and supply USDC to Aave" now compile into the correct contract scope. Previously every model misread Aave as an unsupported protocol and dropped the clause. Known protocols (Uniswap, Aave) are never classified as unsupported.
+
+### Changed
+
+- **The compiler model is now GLM-5 (`zai-org-glm-5`).** Picked from a benchmarked A/B of intelligence/price-peer models on 15 real compile intents: highest quality with the tightest latency, replacing the interim 0.14.0 choice.
+- **The compiler fails fast and retries on Venice latency spikes.** Per-call timeout dropped to 20s with up to 3 internal retries (a transient spike now costs ~one quick retry instead of a hard failure), and a true timeout surfaces a clean "compiler is busy" message instead of burning a second full retry cycle.
+- **Sharper plan rules.** Capture every limit the user states (period, lifetime, per-tx, expiry, max uses, merchant, per-trade cap) and invent none; surface a per-trade cap on a non-USDC sell, and a payee named in words, as honest warnings rather than silently dropping them.
+
 ## [0.14.0] - 2026-06-13
 
 Hardening pass from a full end-to-end production test sweep. The headline fix closes a cross-deployment nonce-cache drift that could brick every freshly issued card's on-chain spends; the Venice compiler gets a fast model so natural-language card terms stop timing out; and the OAuth consent pages finally match the rest of the app.

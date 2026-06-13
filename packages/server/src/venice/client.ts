@@ -10,10 +10,12 @@ export type ChatFn = (messages: ChatMessage[]) => Promise<string>;
 
 const VENICE_BASE = "https://api.venice.ai/api/v1";
 
-// Per Venice call. The compiler may retry once (parse failure), so the worst-case wall
-// time is ~2x this; keep it under the dashboard's COMPILE_TIMEOUT_MS (65s). Large models
-// (e.g. minimax-m3) routinely answer in 20-40s, which blew the old 20s budget.
-const CHAT_TIMEOUT_MS = 30_000;
+// Per attempt. GLM-5's MEDIAN compile is ~4-5s, but Venice has sporadic tail-latency spikes
+// (isolated 14-42s blips, ~1 in 5 calls, the rest fast). So we FAIL FAST on a spike and retry
+// a fresh request rather than waiting one out — the retry almost always lands in the median.
+// CHAT_TIMEOUT_MS × CHAT_TIMEOUT_TRIES must stay under the dashboard's COMPILE_TIMEOUT_MS (65s).
+const CHAT_TIMEOUT_MS = 20_000;
+const CHAT_TIMEOUT_TRIES = 3; // 3 × 20s = 60s worst case; a single spike costs ~1 retry (~4s)
 
 export function veniceChat(opts?: { apiKey?: string; model?: string; baseUrl?: string }): ChatFn {
   const apiKey = opts?.apiKey ?? process.env.VENICE_API_KEY;
@@ -26,38 +28,45 @@ export function veniceChat(opts?: { apiKey?: string; model?: string; baseUrl?: s
   }
   return async (messages: ChatMessage[]) => {
     if (!apiKey) throw new Error("VENICE_API_KEY not configured");
-    let res: Response;
-    try {
-      res = await fetch(`${base}/chat/completions`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: 0,
-          // Venice-specific knobs are ignored by non-Venice OpenAI endpoints; harmless.
-          venice_parameters: { include_venice_system_prompt: false },
-        }),
-        // a hung upstream must not hang /cards/compile (the retry pass doubles the wait)
-        signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
-      });
-    } catch (e) {
-      if (e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) {
-        throw new Error(`venice: no response within ${CHAT_TIMEOUT_MS / 1000}s`);
+    let lastTimeout: Error | null = null;
+    // retry ONLY on a timeout (a transient tail-latency spike); any other failure is
+    // returned immediately so we never spin on a real error (bad key, 4xx, non-JSON).
+    for (let attempt = 0; attempt < CHAT_TIMEOUT_TRIES; attempt++) {
+      let res: Response;
+      try {
+        res = await fetch(`${base}/chat/completions`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: 0,
+            // Venice-specific knobs are ignored by non-Venice OpenAI endpoints; harmless.
+            venice_parameters: { include_venice_system_prompt: false },
+          }),
+          signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
+        });
+      } catch (e) {
+        if (e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) {
+          // fail fast and retry a fresh request; spikes are per-request, so the next try is usually fast
+          lastTimeout = new Error(`venice: no response within ${CHAT_TIMEOUT_MS / 1000}s`);
+          continue;
+        }
+        throw e;
       }
-      throw e;
+      const text = await res.text();
+      if (!res.ok) throw new Error(`venice ${res.status}: ${text.slice(0, 300)}`);
+      let json: { choices?: Array<{ message?: { content?: string } }> };
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error(`venice: non-JSON response: ${text.slice(0, 200)}`);
+      }
+      const content = json.choices?.[0]?.message?.content;
+      if (typeof content !== "string") throw new Error("venice: no message content");
+      return content;
     }
-    const text = await res.text();
-    if (!res.ok) throw new Error(`venice ${res.status}: ${text.slice(0, 300)}`);
-    let json: { choices?: Array<{ message?: { content?: string } }> };
-    try {
-      json = JSON.parse(text);
-    } catch {
-      throw new Error(`venice: non-JSON response: ${text.slice(0, 200)}`);
-    }
-    const content = json.choices?.[0]?.message?.content;
-    if (typeof content !== "string") throw new Error("venice: no message content");
-    return content;
+    throw lastTimeout ?? new Error("venice: no response");
   };
 }
 

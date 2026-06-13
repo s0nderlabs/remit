@@ -58,19 +58,38 @@ Output ONLY a JSON object with this shape (omit fields that don't apply):
   "expiryDays": 30,
   "maxUses": 5,
   "merchants": ["0x...", "merchant name"],
-  "swaps": [ {"protocol":"Uniswap","sell":"USDC","buy":"WETH","perTradeMax":"50"} ],
+  "swaps": [
+    {"protocol":"Uniswap","sell":"USDC","buy":"WETH","perTradeMax":"50"},
+    {"protocol":"Aave","sell":"USDC"}
+  ],
   "contracts": [ {"target":"0x...","methods":["approve(address,uint256)"]} ],
   "subcards": true,
-  "unsupported": ["any clause you cannot express, e.g. spending native ETH or buying NFTs"]
+  "unsupported": ["a clause you TRULY cannot express, e.g. spending native ETH or buying NFTs"]
 }
 Rules:
 - Amounts are decimal strings in the token's units (USDC dollars).
 - "period.unit" is one of day | week | month.
-- Put a clause in "unsupported" if it needs spending native ETH (value), buying NFTs, or
-  anything not covered by pay limits / swaps / explicit contract calls.
-- Use "swaps" for "let it trade/swap X to Y on <protocol>". Use "contracts" ONLY when the
-  user gives an explicit contract address.
-- Return JSON only, no prose.`;
+- "swaps" scopes interactions with a KNOWN protocol. The known protocols are exactly:
+  Uniswap (token swaps) and Aave (supply / lend / deposit, withdraw, borrow, repay). Put EVERY
+  known-protocol action here, one entry each, even when the user asks for several at once:
+    * swap / trade X to Y    -> {"protocol":"Uniswap","sell":"X","buy":"Y"}  (sell = token spent)
+    * supply / lend / deposit X -> {"protocol":"Aave","sell":"X"}            (sell = token supplied)
+  Use the protocol's real name. The server scopes that protocol's allowed methods itself.
+  Uniswap and Aave are SUPPORTED — NEVER put them, or a swap/supply on them, in "unsupported".
+- If the user states a per-trade or per-swap cap, ALWAYS set "perTradeMax" to that amount on the
+  swap entry (decimal string). The server enforces it when the spent ("sell") token is USDC and, when
+  the sell token is not USDC, drops it with a warning so the user is told it could not be applied.
+- Use "contracts" ONLY when the user gives an explicit contract address (0x...).
+- If the user restricts payments to a payee NAMED in words (e.g. "my coffee shop") rather than an
+  address, still list that name in "merchants"; the server tells the user it cannot lock to a name
+  without the payee's 0x address.
+- Put a clause in "unsupported" ONLY when it needs spending native ETH (value), buying/minting NFTs,
+  bridging to another chain, staking, or a protocol that is NOT Uniswap or Aave. A known protocol is
+  never unsupported.
+- Capture EVERY limit the user states — period, lifetime, per-payment / per-tx (perTx), expiry,
+  max uses, merchant, per-trade cap. Never drop one they asked for. At the same time, do NOT ADD a
+  limit they did not state (no default perTx, expiry, or maxUses). Include all stated limits, invent none.
+- Return RAW JSON only — no prose, no markdown code fences.`;
 
 /** Run the NL -> plan -> resolve -> assemble pipeline. `chat` is injectable (tests fake it).
  * Retries ONCE when the first pass fails to parse or garbles a name (the model occasionally
@@ -99,8 +118,14 @@ export async function compileIntent(
   try {
     first = await attempt();
     if (!garbled(first)) return first;
-  } catch {
-    // parse failure on the first pass: fall through to the single retry
+  } catch (e) {
+    // the chat client already retries transient timeouts internally; if a timeout still
+    // surfaces here the upstream is genuinely unavailable, so don't burn a second full
+    // retry cycle (which would blow past the dashboard's compile budget) — surface it.
+    if (e instanceof Error && /no response within/.test(e.message)) {
+      throw new RefusalError("invalid_terms", `the compiler is busy right now (model did not respond): ${e.message}`);
+    }
+    // otherwise a parse/garble failure: fall through to the single retry
   }
   try {
     const second = await attempt();
