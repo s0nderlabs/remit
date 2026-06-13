@@ -275,6 +275,14 @@ export function IconCheck() {
   );
 }
 
+export function IconClose({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
+      <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" />
+    </svg>
+  );
+}
+
 // ---------- dot-matrix chip ----------
 // Animated: the chip "ticks" like data moving through it · each beat one base
 // dot rests while two transient dots light up. Deterministic per frame, slow,

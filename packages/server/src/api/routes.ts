@@ -245,6 +245,20 @@ export function apiRoutes(deps: AppDeps, oauth: OAuthStore): Hono<{ Variables: {
       if (!deps.store.getUser(userId)) {
         throw new RefusalError("invalid_terms", "user not onboarded · call /onboard first");
       }
+      // Re-sync the revocation nonce from on-chain before issuing. The DB cache is set at
+      // onboard and only refreshed on login/DID-change, but the NonceEnforcer nonce is
+      // GLOBAL per account: a nuke/revoke-all from ANOTHER deployment (or session) against
+      // the same wallet bumps it on-chain without this DB ever seeing it. Issuing against a
+      // stale cache mints a card whose every on-chain spend fails NonceEnforcer:invalid-nonce.
+      // Authoritative read, best-effort: an RPC blip falls through to the cached value.
+      try {
+        const live = await readRevocationNonce(userAddress);
+        if (BigInt(deps.store.getUser(userId)!.revocation_nonce) !== live) {
+          deps.store.setRevocationNonce(userId, live);
+        }
+      } catch {
+        /* RPC unavailable -> proceed with the cached nonce */
+      }
       const prepared = await prepareRootCard(
         { store: deps.store, userAddress },
         { userId, name: body.name, terms: body.terms },

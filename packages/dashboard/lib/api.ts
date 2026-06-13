@@ -24,6 +24,10 @@ export type WireDelegation = {
 // as an error the UI can show, never an infinite "Loading…".
 const TOKEN_TIMEOUT_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 20_000;
+// Venice NL compile is an LLM round-trip (slow model + a parse-retry pass), far slower
+// than every other API call. Give it its own budget so the dashboard doesn't abort while
+// the server is still drafting (was: shared 20s -> "request timed out" mid-compile).
+const COMPILE_TIMEOUT_MS = 65_000;
 
 async function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   let t: ReturnType<typeof setTimeout> | undefined;
@@ -185,7 +189,11 @@ export const api = {
 
   // --- Venice NL compiler: free-text intent -> DRAFT CardTerms (#43; never issues) ---
   compile: (intent: string) =>
-    call<CompileResult>("/cards/compile", { method: "POST", body: JSON.stringify({ intent }) }),
+    call<CompileResult>("/cards/compile", {
+      method: "POST",
+      body: JSON.stringify({ intent }),
+      signal: timeoutSignal(COMPILE_TIMEOUT_MS),
+    }),
 
   // --- reads + server-side controls (scoped to the embedded-wallet userId) ---
   tree: (userId: string) => call<{ tree: TreeNode[] }>(`/tree?userId=${encodeURIComponent(userId)}`),

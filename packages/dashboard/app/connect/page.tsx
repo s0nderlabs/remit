@@ -11,13 +11,27 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { api, type CardState } from "@/lib/api";
 import { CopyButton } from "../components/Authority";
-import { capWord } from "../components/ui";
+import { capWord, IconCheck } from "../components/ui";
 import { useRemit } from "../useRemit";
+
+// inset surface for data strings (auth code / redirect host) · rides theme tokens
+const inset: React.CSSProperties = {
+  margin: "8px 0",
+  padding: "10px 12px",
+  background: "var(--float)",
+  border: "1px solid var(--hairline)",
+  borderLeft: "3px solid var(--accent)",
+  borderRadius: 8,
+  color: "var(--ink)",
+  wordBreak: "break-all",
+};
+const help: React.CSSProperties = { color: "var(--label)", fontSize: 12, lineHeight: 1.5 };
+const body: React.CSSProperties = { color: "var(--body)", lineHeight: 1.5 };
 
 export default function ConnectPage() {
   return (
     <main className="narrow">
-      <Suspense fallback={<div className="mono">Loading…</div>}>
+      <Suspense fallback={<div className="panel" style={{ color: "var(--body)" }}>Loading…</div>}>
         <Consent />
       </Suspense>
     </main>
@@ -161,71 +175,57 @@ function Consent() {
   }, [requestId]);
 
   if (!requestId) {
-    return <div className="panel mono">Missing ?request parameter, start the connection from your agent.</div>;
+    return <div className="panel" style={body}>Missing the request parameter · start the connection from your agent.</div>;
   }
   if (granted) {
     const openclaw = /openclaw/i.test(granted.client ?? "");
     return (
       <div className="panel" data-testid="granted">
-        <h2>Card Granted</h2>
+        <h1>Card Granted</h1>
         {granted.code ? (
           <>
-            <p className="mono" style={{ color: "#666" }}>
+            <p style={body}>
               {openclaw
                 ? "Your agent is waiting in the terminal · give it this code:"
                 : granted.loopback
                   ? "Press Continue if your agent is listening locally · or give it this code if it asked for one:"
                   : "Returning you to the app · if it asks for a code, use this one:"}
             </p>
-            <p
-              className="mono"
-              data-testid="auth-code"
-              style={{
-                margin: "6px 0",
-                padding: "10px 12px",
-                background: "var(--surface-warm)",
-                border: "1px solid var(--hairline)",
-                borderLeft: "3px solid var(--accent)",
-                borderRadius: 8,
-                color: "var(--ink)",
-                wordBreak: "break-all",
-                userSelect: "all",
-              }}
-            >
+            <p className="mono" data-testid="auth-code" style={{ ...inset, userSelect: "all" }}>
               {granted.code}
             </p>
             <div className="row" style={{ gap: 8 }}>
               <CopyButton text={granted.code} label="Copy Code" />
-              <button onClick={() => (window.location.href = granted.redirectTo)} data-testid="continue">
+              <button className="dbtn" onClick={() => (window.location.href = granted.redirectTo)} data-testid="continue">
                 Continue to App
               </button>
             </div>
-            <p className="mono" style={{ color: "#666", fontSize: 12, marginTop: 8 }}>
+            <p style={{ ...help, marginTop: 8 }}>
               {openclaw
-                ? <>Finish with <b>openclaw mcp login &lt;server&gt; --code &lt;code&gt;</b> · the code expires in ~2 minutes</>
-                : <>Terminal clients take it like <b>… login &lt;server&gt; --code &lt;code&gt;</b> · expires in ~2 minutes · safe to close this tab once your agent confirms</>}
+                ? <>Finish with <b>openclaw mcp login &lt;server&gt; --code &lt;code&gt;</b> · the code expires in ~2 minutes.</>
+                : <>Terminal clients take it like <b>… login &lt;server&gt; --code &lt;code&gt;</b> · expires in ~2 minutes · safe to close this tab once your agent confirms.</>}
             </p>
           </>
         ) : (
-          <p className="mono" style={{ color: "#666" }}>
-            Returning you to the app…{" "}
-            <button onClick={() => (window.location.href = granted.redirectTo)} data-testid="continue">
+          <>
+            <p style={body}>Returning you to the app…</p>
+            <button className="dbtn" onClick={() => (window.location.href = granted.redirectTo)} data-testid="continue">
               Continue
             </button>
-          </p>
+          </>
         )}
       </div>
     );
   }
-  if (!ready) return <div className="mono">Loading…</div>;
+  if (!ready) return <div className="panel" style={body}>Loading…</div>;
   if (!authenticated) {
     return (
       <div className="panel" style={{ textAlign: "center", padding: 40 }}>
-        <h2>Connect an Agent to remit</h2>
-        <p className="mono" style={{ color: "#666" }}>
-          An agent is asking for spending authority · sign in to pick which card it gets
+        <h1>Connect an Agent to remit</h1>
+        <p style={{ ...body, margin: "8px 0 18px" }}>
+          An agent is asking for spending authority · sign in to pick which card it gets.
         </p>
-        <button className="primary" onClick={login} data-testid="login">
+        <button className="dbtn" onClick={login} data-testid="login">
           Sign In
         </button>
       </div>
@@ -233,78 +233,90 @@ function Consent() {
   }
   if (err && !info) {
     return (
-      <div className="panel mono">
+      <div className="panel">
         <p className="err">{err}</p>
-        <p>
+        <p style={body}>
           The request may have expired (the agent can retry), or your account isn&apos;t set up yet:{" "}
           <Link href="/">open the dashboard</Link> first.
         </p>
       </div>
     );
   }
-  if (!info || !cards) return <div className="mono">Loading request…</div>;
+  if (!info || !cards) return <div className="panel" style={body}>Loading request…</div>;
 
   return (
     <div className="panel" data-testid="consent">
-      <h2>Grant a Card</h2>
-      <p className="mono" style={{ color: "#666" }}>
+      <h1>Grant a Card</h1>
+      <p style={body}>
         An app calling itself <b>{info.client_name ?? "an MCP client"}</b> is requesting access. If you
         approve, the authorization will be sent to:
       </p>
-      <p className="mono" style={{ margin: "6px 0", padding: "10px 12px", background: "var(--surface-warm)", border: "1px solid var(--hairline)", borderLeft: "3px solid var(--accent)", borderRadius: 8, color: "var(--ink)" }}>
-        → <b>{info.redirect_host}</b>
+      <p className="mono" style={inset}>
+        <b>{info.redirect_host}</b>
       </p>
-      <p className="mono" style={{ color: "#666", fontSize: 12 }}>
+      <p style={help}>
         The app name is self-reported and unverified. Only continue if you recognize that destination as
-        the app you are connecting. It will receive a revocable token scoped to ONE card, never the card secret.
+        the app you are connecting. It will receive a revocable token scoped to one card, never the card secret.
       </p>
       {cards.length === 0 ? (
-        <p className="mono">
+        <p style={body}>
           No live cards to grant. <Link href="/">Issue one on the dashboard</Link>, then retry from your agent.
         </p>
       ) : (
         <>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "12px 0" }}>
-            {cards.map((c) => (
-              <label
-                key={c.card_id}
-                className="mono"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: 10,
-                  border: picked === c.card_id ? "1px solid var(--accent)" : "1px solid var(--hairline)",
-                  boxShadow: picked === c.card_id ? "0 0 0 3px var(--accent-tint)" : undefined,
-                  borderRadius: 10,
-                  cursor: "pointer",
-                }}
-              >
-                <input
-                  type="radio"
-                  name="card"
-                  checked={picked === c.card_id}
-                  onChange={() => setPicked(c.card_id)}
+          <div role="radiogroup" aria-label="Card to grant" style={{ display: "flex", flexDirection: "column", gap: 8, margin: "14px 0" }}>
+            {cards.map((c) => {
+              const on = picked === c.card_id;
+              return (
+                <div
+                  key={c.card_id}
+                  role="radio"
+                  aria-checked={on}
+                  tabIndex={0}
                   data-testid={`pick-${c.name}`}
-                />
-                <span style={{ flex: 1 }}>
-                  <b>{c.name}</b>{" "}
-                  <span className={`chip ${c.status}`}>{capWord(c.status)}</span>
-                  <br />
-                  <span style={{ color: "#666", fontSize: 12 }}>
-                    {c.remaining_this_period !== null && `${c.remaining_this_period} USDC left this period`}
-                    {c.remaining_this_period === null && c.remaining_lifetime !== null && `${c.remaining_lifetime} USDC lifetime left`}
+                  onClick={() => setPicked(c.card_id)}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPicked(c.card_id); } }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: 12,
+                    border: on ? "1px solid var(--accent)" : "1px solid var(--hairline)",
+                    boxShadow: on ? "0 0 0 3px var(--accent-tint)" : undefined,
+                    borderRadius: 12,
+                    cursor: "pointer",
+                  }}
+                >
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 18, height: 18, flex: "none", borderRadius: "50%",
+                      border: on ? "none" : "1.5px solid var(--hairline-strong)",
+                      background: on ? "var(--accent)" : "transparent",
+                      color: "var(--on-ink)", display: "flex", alignItems: "center", justifyContent: "center",
+                    }}
+                  >
+                    {on && <IconCheck />}
                   </span>
-                </span>
-              </label>
-            ))}
+                  <span style={{ flex: 1 }}>
+                    <b>{c.name}</b>{" "}
+                    <span className={`chip ${c.status}`}>{capWord(c.status)}</span>
+                    <br />
+                    <span style={{ color: "var(--label)", fontSize: 12 }}>
+                      {c.remaining_this_period !== null && `${c.remaining_this_period} USDC left this period`}
+                      {c.remaining_this_period === null && c.remaining_lifetime !== null && `${c.remaining_lifetime} USDC lifetime left`}
+                    </span>
+                  </span>
+                </div>
+              );
+            })}
           </div>
           {err && <p className="err">{err}</p>}
           <div className="row" style={{ gap: 8 }}>
-            <button className="primary" onClick={approve} disabled={!picked || phase !== "idle"} data-testid="approve">
+            <button className="dbtn" onClick={approve} disabled={!picked || phase !== "idle"} data-testid="approve">
               {phase === "idle" ? "Grant This Card" : phase === "submitting" ? "Granting…" : "Returning to your agent…"}
             </button>
-            <button onClick={deny} disabled={phase !== "idle"} data-testid="deny">
+            <button className="mghost" onClick={deny} disabled={phase !== "idle"} data-testid="deny">
               Deny
             </button>
           </div>

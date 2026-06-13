@@ -287,7 +287,7 @@ function NukeModal({
       doneTitle="Every card is dead"
       doneNote={
         <>
-          Nuked ✓ the whole tree is revoked on-chain.{" "}
+          Nuked. The whole tree is revoked on-chain.{" "}
           {tx && (
             <a href={`https://basescan.org/tx/${tx}`} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
               {shortHex(tx, 10, 0)}

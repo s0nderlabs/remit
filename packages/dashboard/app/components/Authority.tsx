@@ -221,7 +221,7 @@ export function RevokeButton({
         doneTitle="Card Revoked"
         doneNote={
           <>
-            Revoked ✓ The authority is dead.{" "}
+            Revoked. The authority is dead.{" "}
             {tx && (
               <a href={`https://basescan.org/tx/${tx}`} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
                 {shortHex(tx, 10, 0)}
@@ -324,13 +324,15 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
+      className="dbtn quiet"
       onClick={async () => {
         await navigator.clipboard.writeText(text);
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
       }}
     >
-      {copied ? "Copied ✓" : label}
+      {copied ? <IconCheck /> : <IconCopy />}
+      {copied ? "Copied" : label}
     </button>
   );
 }

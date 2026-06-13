@@ -10,7 +10,10 @@ export type ChatFn = (messages: ChatMessage[]) => Promise<string>;
 
 const VENICE_BASE = "https://api.venice.ai/api/v1";
 
-const CHAT_TIMEOUT_MS = 20_000;
+// Per Venice call. The compiler may retry once (parse failure), so the worst-case wall
+// time is ~2x this; keep it under the dashboard's COMPILE_TIMEOUT_MS (65s). Large models
+// (e.g. minimax-m3) routinely answer in 20-40s, which blew the old 20s budget.
+const CHAT_TIMEOUT_MS = 30_000;
 
 export function veniceChat(opts?: { apiKey?: string; model?: string; baseUrl?: string }): ChatFn {
   const apiKey = opts?.apiKey ?? process.env.VENICE_API_KEY;

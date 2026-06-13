@@ -10,6 +10,7 @@ import { useEffect } from "react";
 import { motion } from "motion/react";
 import type { CardState } from "@/lib/api";
 import { ConnectChips, UrlBox } from "./Authority";
+import { IconClose } from "./ui";
 
 export function ConnectOverlay({
   card,
@@ -61,7 +62,7 @@ export function ConnectOverlay({
             <h2 className="ovtitle">{card.name}</h2>
           </div>
           <button className="closex" onClick={onClose} aria-label="Close">
-            ✕
+            <IconClose />
           </button>
         </div>
         <UrlBox url={url} testid="card-url" />

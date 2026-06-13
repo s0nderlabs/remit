@@ -18,7 +18,7 @@ import { Dossier, bayAggregate } from "./components/Dossier";
 import { ConnectChips, UrlBox } from "./components/Authority";
 import { Select } from "./components/Select";
 import type { FeedRow } from "./components/Activity";
-import { ChipDots, Guilloche, isDead, periodLabel, shortHex } from "./components/ui";
+import { ChipDots, Guilloche, IconClose, isDead, periodLabel, shortHex } from "./components/ui";
 
 export default function Home() {
   const remit = useRemit();
@@ -730,7 +730,7 @@ function IssueModal({
           </div>
           {onClose && (
             <button className="closex" onClick={onClose} aria-label="Close">
-              ✕
+              <IconClose />
             </button>
           )}
         </div>

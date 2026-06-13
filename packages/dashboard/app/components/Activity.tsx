@@ -18,6 +18,21 @@ export function railLabel(kind: string): string {
   return kind;
 }
 
+// raw server statuses must never leak verbatim (snake_case / lowercase breaks the
+// Title-Case label voice). Map the known set; Title-Case anything new as a fallback.
+const STATE_LABELS: Record<string, string> = {
+  pending: "Pending",
+  error: "Failed",
+  failed: "Failed",
+  declined: "Declined",
+  settlement_unconfirmed: "Settling",
+};
+/** in-flight states are not "blocked" (no danger-red): the spend is still progressing */
+export const inFlight = (status: string) => status === "pending" || status === "settlement_unconfirmed";
+export function stateLabel(status: string): string {
+  return STATE_LABELS[status] ?? status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 // raw hex anywhere in a memo reads like a register dump · shorten every run in place
 const HEXISH = /0x[0-9a-fA-F]{10,}/g;
 export function tidyMemo(s: string): string {
@@ -83,9 +98,9 @@ export function ChargeList({ rows, empty }: { rows: FeedRow[]; empty: string }) 
               <span className="cur">$</span>
               {fmtUsd(ch.amount).slice(1)}
             </span>
-            <span className={`a-state${ok ? "" : " blocked"}`}>
+            <span className={`a-state${ok || inFlight(ch.status) ? "" : " blocked"}`}>
               <span className="gdot" />
-              {ok ? "Settled" : ch.status}
+              {ok ? "Settled" : stateLabel(ch.status)}
             </span>
             <span className="a-rcpt">
               {ch.tx ? (

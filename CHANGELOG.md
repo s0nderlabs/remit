@@ -2,6 +2,20 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.14.0] - 2026-06-13
+
+Hardening pass from a full end-to-end production test sweep. The headline fix closes a cross-deployment nonce-cache drift that could brick every freshly issued card's on-chain spends; the Venice compiler gets a fast model so natural-language card terms stop timing out; and the OAuth consent pages finally match the rest of the app.
+
+### Fixed
+
+- **Issuance re-syncs the revocation nonce on-chain before signing.** The NonceEnforcer nonce is global per account, but each deployment cached its own copy and only refreshed it at onboard, so a revoke-all run from another session/deployment left the cache stale. A card issued against a stale nonce had every on-chain spend (pay, paid_fetch, execute, and fiat settlement) fail with `NonceEnforcer:invalid-nonce`. The prepare route now reads the authoritative on-chain nonce and re-syncs the cache before issuing (best-effort, falls back to the cache on RPC failure).
+- **Venice NL compile no longer times out.** Switched the compiler model to `llama-3.3-70b` (~1.5s vs ~20s for the previous model on the full prompt, validated for output quality), gave the dashboard compile call its own 65s budget, and raised the per-call server timeout to 30s as a safety net.
+- **The activity feed stops leaking raw charge statuses.** Snake_case server statuses like `settlement_unconfirmed` map to Title-Case labels, and in-flight states (pending, settling) are no longer painted danger-red.
+
+### Changed
+
+- **Restyled the `/connect` OAuth consent and "Card Granted" pages onto the design system.** Theme-flipping `--body`/`--label`/`--float` tokens replace hardcoded `#666` (which was near-invisible in dark mode), page titles are `h1`, buttons use the `.dbtn`/`.mghost` tiers, the card picker is an accessible `radiogroup` (no more native radios), and close/copy controls use SVG icons instead of text glyphs.
+
 ## [0.13.0] - 2026-06-12
 
 Round six: the sign-in becomes the landing, and first-run stops being a hostage situation. A three-candidate blind design pass picked "The Counter"; the forced first-card composer gave way to a welcome flow, a funding step with a live balance, and a guided spotlight tour over a specimen card. Shipped through a 3-finder review workflow (15 findings, 12 fixed).
