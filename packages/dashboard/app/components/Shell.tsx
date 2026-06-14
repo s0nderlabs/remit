@@ -59,6 +59,15 @@ export function Cockpit({
           </Link>
         )}
         <div className="railfoot">
+          {/* the reference: a quiet link out to /docs, riding the same utility tier
+              as the network dot and the theme toggle */}
+          <Link className="raillink" href="/docs" title="Documentation" aria-label="Documentation">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H18a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6.5A1.5 1.5 0 0 1 5 18.5z" />
+              <path d="M5 17.5A1.5 1.5 0 0 1 6.5 16H19" />
+              <path d="M8.5 7.5h7M8.5 10.5h7" />
+            </svg>
+          </Link>
           {/* the Base mark, at rest · no pulse: the network is a fact, not an alarm */}
           <span className="net" title="Base · Mainnet" aria-label="Base · Mainnet">
             <svg viewBox="0 0 16 16" aria-hidden>

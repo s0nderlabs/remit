@@ -2,6 +2,18 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.16.0] - 2026-06-14
+
+In-app documentation. A new `/docs` reference, built in the dashboard's own design system, now lives one click off the sidebar: the product model, card lifecycle, MCP tool surface, connect lanes, API reference, security model, and self-hosting, grounded line-by-line in the actual engine and server code. The README got the same grounding pass.
+
+### Added
+
+- **A `/docs` reference page** in the dashboard, linked from the rail. Funnel Display + Sora, INK light/dark, a sticky table-of-contents grouped into proper sections (Concepts, Cards, Connect, Advanced, Operate, Reference) with scroll-spy and items nested under their headers, a subtle aurora-beam background (the login's page weather, anchored to the hero), copy-on-click code blocks, the terms-to-enforcer mapping, the full REST / OAuth / facilitator endpoint surface, and the env-var and contracts tables. Callouts are quiet contained boxes (no colored side-bar). Static-prerendered route.
+
+### Changed
+
+- **README grounded against the code.** Corrected the spend-path wording (the 1Shot relayer, not the engine, calls `redeemDelegations`); clarified that `perTxMax` and the merchant allowlist are server-side carve policy backstopped by the leaf's amount scope, not dual on-chain enforcers; noted that `revoke_subcard` is a server-side kill (on-chain permanence comes from revoking the root or nuking); recorded that card secrets are AES-256-GCM-encrypted at rest as well as hashed; added the `per_trade_exceeded` refusal; and documented the `BASESCAN_API_KEY` / `VENICE_BASE_URL` env vars and the `/docs` surface. Verified via a 7-agent grounding cross-check (176 claims confirmed, 9 discrepancies fixed).
+
 ## [0.15.0] - 2026-06-13
 
 Compiler robustness pass. The natural-language card compiler now understands Aave (and any combination of Aave plus Uniswap in one card), stopped inventing or dropping limits, and rides out Venice's occasional latency spikes instead of timing out on them. The compiler model is now `zai-org-glm-5` (GLM-5), chosen from a head-to-head benchmark of intelligence-peer models on the real compile task.
