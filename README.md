@@ -204,7 +204,7 @@ The dashboard carries **no shared secret**: every API call sends the signed-in u
 
 ## Security model
 
-- **Custody**: your funds stay in your wallet. The per-card agent key signs redelegations only; it holds no assets and is encrypted at rest.
+- **Custody**: your funds stay in your wallet. The per-card agent key signs redelegations only; it holds no assets and is encrypted at rest. You can export your wallet's private key from the account menu at any time (through Privy's secure modal, rendered in a separate-domain iframe remit never reads) and walk away to any client.
 - **Dashboard auth**: per-user Privy sessions, verified server-side against the app JWKS. At onboard, the embedded wallet signs `remit-onboard:v1:<did>` to prove key possession bound to that login; from then on, every card route is scoped to the authenticated user's own cards.
 - **Issuance integrity**: the server verifies the delegation signature recovers to the delegator on both issuance lanes before persisting a card.
 - **Card secrets**: 256-bit, stored as a hash for auth and AES-256-GCM-encrypted at rest for the reveal/rotate feature; the URL is a credential, rotate it like a password.

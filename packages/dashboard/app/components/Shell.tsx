@@ -17,8 +17,9 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { erc20Abi, formatUnits, type Address } from "viem";
+import { useExportWallet } from "@privy-io/react-auth";
 import { api } from "@/lib/api";
-import { publicClient, USDC_BASE } from "@/lib/chain";
+import { publicClient, USDC_BASE, WETH_BASE } from "@/lib/chain";
 import type { useRemit } from "../useRemit";
 import { copyText, IconCheck, IconCopy, shortHex } from "./ui";
 import { ThemeToggle } from "./Theme";
@@ -114,19 +115,43 @@ function ProfileMenu({
   // the portal needs the document; the anchor pins the fixed menu to the avatar
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
-  // the wallet's USDC, read once per menu open (one balanceOf against Base) ·
-  // the last value holds across reopens so the figure never flashes empty
+  // the wallet's holdings, read once per menu open (a balanceOf trio against Base) ·
+  // the last value holds across reopens so the figures never flash empty. USDC is
+  // the funding asset; ETH (native, gas) and WETH (the execute lane's swap output)
+  // round out what the wallet actually holds beyond the card's spend budget.
   const [usdc, setUsdc] = useState<string | null>(null);
+  const [eth, setEth] = useState<string | null>(null);
+  const [weth, setWeth] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  // a same-tab account switch must never show the previous wallet's figure
-  useEffect(() => setUsdc(null), [address]);
+  // Privy's secure export: opens a modal on a separate-domain iframe where the
+  // user can copy their key · remit's app never reads it (self-custody escape hatch)
+  const { exportWallet } = useExportWallet();
+  // a same-tab account switch must never show the previous wallet's figures
+  useEffect(() => {
+    setUsdc(null);
+    setEth(null);
+    setWeth(null);
+  }, [address]);
   useEffect(() => {
     if (!open || !address) return;
     let live = true;
+    const a = address as Address;
     publicClient
-      .readContract({ address: USDC_BASE, abi: erc20Abi, functionName: "balanceOf", args: [address as Address] })
+      .readContract({ address: USDC_BASE, abi: erc20Abi, functionName: "balanceOf", args: [a] })
       .then((v) => {
         if (live) setUsdc(formatUnits(v, 6));
+      })
+      .catch(() => {});
+    publicClient
+      .getBalance({ address: a })
+      .then((v) => {
+        if (live) setEth(formatUnits(v, 18));
+      })
+      .catch(() => {});
+    publicClient
+      .readContract({ address: WETH_BASE, abi: erc20Abi, functionName: "balanceOf", args: [a] })
+      .then((v) => {
+        if (live) setWeth(formatUnits(v, 18));
       })
       .catch(() => {});
     return () => {
@@ -135,6 +160,15 @@ function ProfileMenu({
   }, [open, address]);
   const bal = usdc === null ? null : Number(usdc);
   const balFig = bal === null ? "–" : bal > 0 && bal < 0.01 ? "<$0.01" : `$${bal.toFixed(2)}`;
+  // token readout: up to 6 decimals, trailing zeros trimmed · "0" when empty,
+  // "<0.000001" for dust that would otherwise render as zero
+  const tokFig = (s: string | null) => {
+    if (s === null) return "–";
+    const n = Number(s);
+    if (n === 0) return "0";
+    if (n < 0.000001) return "<0.000001";
+    return n.toFixed(6).replace(/\.?0+$/, "");
+  };
   const btnRef = useRef<HTMLButtonElement>(null);
   const [anchor, setAnchor] = useState<React.CSSProperties | null>(null);
   // the anchor is captured at open; a resize would detach the menu from the avatar
@@ -191,6 +225,20 @@ function ProfileMenu({
                         </span>
                         <span className="proballbl">USDC on Base</span>
                       </div>
+                      <div className="proassets">
+                        <span className="proasset">
+                          <span className="proassetfig" data-testid="wallet-eth">
+                            {tokFig(eth)}
+                          </span>
+                          ETH
+                        </span>
+                        <span className="proasset">
+                          <span className="proassetfig" data-testid="wallet-weth">
+                            {tokFig(weth)}
+                          </span>
+                          WETH
+                        </span>
+                      </div>
                       <button
                         className={`proaddr${copied ? " done" : ""}`}
                         title="Copy your wallet address"
@@ -205,6 +253,25 @@ function ProfileMenu({
                         {copied ? <IconCheck /> : <IconCopy />}
                       </button>
                       <p className="pronote">Send USDC on Base to this address to fund your cards</p>
+                    </div>
+                  )}
+                  {address && (
+                    <div className="proexport">
+                      <button
+                        className="proitem"
+                        disabled={!remit.embeddedReady}
+                        onClick={() => {
+                          setOpen(false);
+                          // Privy opens its own secure modal; a rejection here only
+                          // means export is disabled / the wallet isn't ready, so
+                          // swallow it rather than leak an unhandled rejection
+                          void exportWallet({ address }).catch(() => {});
+                        }}
+                        data-testid="export-key"
+                      >
+                        Export Private Key
+                      </button>
+                      <p className="pronote">Reveals your key in Privy&apos;s secure window to import elsewhere. remit never sees it.</p>
                     </div>
                   )}
                   {onLogout && (

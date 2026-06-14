@@ -2,6 +2,15 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.17.0] - 2026-06-14
+
+Wallet-block additions to the dashboard account menu: the holdings beyond the funding balance, and a self-custody escape hatch.
+
+### Added
+
+- **Native ETH and WETH balances in the account menu.** Beneath the USDC funding figure, the wallet block now reads back the wallet's native ETH (gas) and WETH (the asset the `execute` lane's Uniswap swap produces), so a USDC-to-WETH swap is visible in the UI instead of only on-chain. All three read directly from Base on menu open under a single liveness guard.
+- **Export Private Key.** A self-custody escape hatch in the account menu: it opens Privy's secure export modal, where the key is shown inside a separate-domain iframe (remit's app never reads or transmits it), so the user can import the wallet into MetaMask or any other client. Gated on the embedded wallet being ready.
+
 ## [0.16.1] - 2026-06-14
 
 Agent-legibility and branding polish, found while testing the card live through the claude.ai connector.
