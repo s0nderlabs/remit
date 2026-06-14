@@ -2,6 +2,18 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.16.1] - 2026-06-14
+
+Agent-legibility and branding polish, found while testing the card live through the claude.ai connector.
+
+### Fixed
+
+- **The `card` tool now reports timestamps as ISO 8601, not raw Unix epochs.** `expires_at`, `period_resets_at`, and each charge's `at` were bare epoch integers, which led a consuming model to misconvert a card expiring Jun 21 as "Apr 21, already passed" and falsely warn the user the card was expired. The conversion is local to the agent-facing tool; `cardState` stays epoch-typed for the dashboard and internal callers.
+
+### Added
+
+- **A real favicon.** The dashboard shipped with no icon (browsers fell back to a generic/default mark); it now serves the remit seal (filled core in a ring, on the brand indigo) via `app/icon.svg`.
+
 ## [0.16.0] - 2026-06-14
 
 In-app documentation. A new `/docs` reference, built in the dashboard's own design system, now lives one click off the sidebar: the product model, card lifecycle, MCP tool surface, connect lanes, API reference, security model, and self-hosting, grounded line-by-line in the actual engine and server code. The README got the same grounding pass.

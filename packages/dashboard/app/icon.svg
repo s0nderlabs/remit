@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-label="remit">
+  <!-- remit seal: a filled core inside a ring, the app's status glyph, on the brand
+       indigo tile. Self-contained colors so it reads on any light/dark tab bar. -->
+  <rect width="32" height="32" rx="8" fill="#635bff"/>
+  <circle cx="16" cy="16" r="8.25" fill="none" stroke="#ffffff" stroke-width="2.4"/>
+  <circle cx="16" cy="16" r="3.3" fill="#ffffff"/>
+</svg>

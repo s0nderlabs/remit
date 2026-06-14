@@ -130,13 +130,19 @@ describe("dynamic tool exposure", () => {
 });
 
 describe("tools", () => {
-  test("card: live state with remaining budget", async () => {
-    const { secret } = await issue({ pay: { period: { amount: "25", seconds: 604800 } }, expiry: Math.floor(Date.now() / 1000) + 86400 });
+  test("card: live state with remaining budget; ISO timestamps", async () => {
+    const expiry = Math.floor(Date.now() / 1000) + 86400;
+    const { secret } = await issue({ pay: { period: { amount: "25", seconds: 604800 } }, expiry });
     const client = await connect(`${base}/c/${secret}/mcp`);
     const result = parse(await client.callTool({ name: "card", arguments: {} }));
     expect(result.status).toBe("active");
     expect(result.remaining_this_period).toBe("25");
     expect(result.recent_charges).toEqual([]);
+    // agent-facing timestamps are ISO 8601 strings, never raw Unix epochs: a bare epoch
+    // led a consuming model to misconvert the expiry and falsely warn the card was expired.
+    expect(result.expires_at).toBe(new Date(expiry * 1000).toISOString());
+    expect(typeof result.period_resets_at).toBe("string");
+    expect(Number.isNaN(Date.parse(result.period_resets_at as string))).toBe(false);
     await client.close();
   });
 

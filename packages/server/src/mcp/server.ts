@@ -38,7 +38,7 @@ import type { AppDeps } from "../deps";
 import { spendDeps, spendKey } from "../deps";
 import { recentFiatDecision } from "../stripe/decisions";
 
-const SERVER_INFO = { name: "remit", version: "0.16.0" };
+const SERVER_INFO = { name: "remit", version: "0.16.1" };
 
 // Surfaced to clients at initialize. Claude Code's tool search (default-on since mid-2026)
 // keys discovery on this text and truncates at 2KB: keep it a compact routing guide.
@@ -118,6 +118,12 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
     async () =>
       run(async () => {
         const state = cardState(sd.store, card.id, now());
+        // Agent-facing timestamps are rendered as ISO 8601, never raw Unix epochs:
+        // a bare epoch invites the consuming model to misconvert it (observed: a card
+        // expiring Jun 21 read as "Apr 21, already passed"). cardState itself stays
+        // epoch-typed for the dashboard + internal callers; the conversion is local here.
+        const iso = (sec: number | null | undefined) =>
+          sec === null || sec === undefined ? null : new Date(sec * 1000).toISOString();
         const charges = sd.store.listCharges(card.id, 10).map((c) => ({
           amount: (Number(c.amount_atoms) / 1e6).toFixed(6),
           fee: (Number(c.fee_atoms) / 1e6).toFixed(6),
@@ -125,9 +131,14 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
           status: c.status,
           tx: c.tx_hash,
           memo: c.memo,
-          at: c.created_at,
+          at: iso(c.created_at),
         }));
-        return { ...state, recent_charges: charges };
+        return {
+          ...state,
+          expires_at: iso(state?.expires_at),
+          period_resets_at: iso(state?.period_resets_at),
+          recent_charges: charges,
+        };
       }),
   );
 
