@@ -38,7 +38,7 @@ import type { AppDeps } from "../deps";
 import { spendDeps, spendKey } from "../deps";
 import { recentFiatDecision } from "../stripe/decisions";
 
-const SERVER_INFO = { name: "remit", version: "0.17.0" };
+const SERVER_INFO = { name: "remit", version: "0.17.1" };
 
 // Surfaced to clients at initialize. Claude Code's tool search (default-on since mid-2026)
 // keys discovery on this text and truncates at 2KB: keep it a compact routing guide.
@@ -133,8 +133,16 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
           memo: c.memo,
           at: iso(c.created_at),
         }));
+        // The card's funds/execution account: the ROOT delegator, where this card's
+        // USDC lives and where any contract output (e.g. swapped WETH) returns. It is
+        // the same account the redemption executes from (spend.ts resolves the root
+        // user's address identically). Surfaced so an agent can set a swap recipient
+        // itself instead of guessing MSG_SENDER or asking the user for an address.
+        const root = sd.store.ancestorChain(card.id).at(-1);
+        const account = root ? (sd.store.getUser(root.user_id)?.address ?? null) : null;
         return {
           ...state,
+          account,
           expires_at: iso(state?.expires_at),
           period_resets_at: iso(state?.period_resets_at),
           recent_charges: charges,
@@ -387,7 +395,7 @@ export function buildMcpServer(deps: AppDeps, card: CardRow): McpServer {
       {
         title: "Execute scoped contract calls",
         description:
-          "Run one or more contract calls allowed by this card's scope, atomically in one redemption (e.g. approve + swap). Targets and methods outside the card's scope are refused. Pass simple calls as method + args (the server encodes calldata); pass complex calls (tuple/array/multicall args, e.g. Uniswap exactInputSingle) as raw `data` (the 4-byte selector is still checked against the allowlist). ERC-20 allowance calls (approve/increaseAllowance) are extra-gated: the spender must be in the card's scope, the token must be on the card's token list (when one is set), USDC allowances respect perTradeMax (per_trade_exceeded), and every allowance is pinned on-chain to the exact spender + amount you requested. Calls carry no native ETH value (value is 0).",
+          "Run one or more contract calls allowed by this card's scope, atomically in one redemption (e.g. approve + swap). Targets and methods outside the card's scope are refused. Pass simple calls as method + args (the server encodes calldata); pass complex calls (tuple/array/multicall args, e.g. Uniswap exactInputSingle) as raw `data` (the 4-byte selector is still checked against the allowlist). ERC-20 allowance calls (approve/increaseAllowance) are extra-gated: the spender must be in the card's scope, the token must be on the card's token list (when one is set), USDC allowances respect perTradeMax (per_trade_exceeded), and every allowance is pinned on-chain to the exact spender + amount you requested. Calls execute from this card's own account (the `account` address returned by the `card` tool), which holds your USDC and receives any output tokens (e.g. a swap's WETH); when a call needs a recipient/destination (e.g. Uniswap exactInputSingle's recipient), use that `account` — you already have it, so never ask the user for an address. Calls carry no native ETH value (value is 0).",
         inputSchema: {
           calls: z
             .array(

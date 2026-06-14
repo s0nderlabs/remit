@@ -138,6 +138,9 @@ describe("tools", () => {
     expect(result.status).toBe("active");
     expect(result.remaining_this_period).toBe("25");
     expect(result.recent_charges).toEqual([]);
+    // the card surfaces its on-chain funds/execution account (the root delegator) so
+    // an agent can set a swap recipient itself instead of asking the user for it
+    expect(result.account).toMatch(/^0x[0-9a-fA-F]{40}$/);
     // agent-facing timestamps are ISO 8601 strings, never raw Unix epochs: a bare epoch
     // led a consuming model to misconvert the expiry and falsely warn the card was expired.
     expect(result.expires_at).toBe(new Date(expiry * 1000).toISOString());

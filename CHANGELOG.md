@@ -2,6 +2,14 @@
 
 All notable changes to remit are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.17.1] - 2026-06-14
+
+A swap-recipient fix in the agent-facing card surface, found while re-recording the demo.
+
+### Changed
+
+- **The `card` tool now returns the card's on-chain `account`** (the root delegator, where the card's USDC lives and where contract outputs land), and the `execute` tool's description points agents at it for any call that needs a recipient (e.g. Uniswap `exactInputSingle`). Previously an agent running a swap had no way to learn the destination for the output token, so it either guessed Uniswap's `MSG_SENDER` constant or stopped to ask the user for an address. Now it sets the recipient itself, deterministically. The surfaced address is resolved the same way the redemption resolves its executing account, so it can never diverge from where the funds actually move.
+
 ## [0.17.0] - 2026-06-14
 
 Wallet-block additions to the dashboard account menu: the holdings beyond the funding balance, and a self-custody escape hatch.
